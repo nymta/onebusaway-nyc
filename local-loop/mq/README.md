@@ -30,6 +30,7 @@ Transport gap: OBA's realtime input is **ZeroMQ**; the feed is a **RabbitMQ stre
 | `verify_stream.py` / `verify.sh` | **Phase A** — read N messages, validate against the RealtimeEnvelope contract, report coverage, capture `samples.jsonl` |
 | `verify_with_oba.sh` | optional — replay `samples.jsonl` through OBA's *actual* Java deserializer (byte-level proof) |
 | `bridge.py` / `start-bridge.sh` / `stop-bridge.sh` | **Phase B** — forward the stream onto the ZeroMQ input queue the inference engine consumes |
+| `viewer.py` / `view.sh` | map viewer — taps :5563 (positions) + :5568 (predictions), resolves stop/route names from the GTFS bundle, serves a Leaflet map at :8090 |
 
 ## 1. Connect & verify the format (read-only)
 
@@ -55,13 +56,26 @@ The bridge re-publishes each message **unchanged**, so bearing/speed/NMEA all re
 It requires the inference webapp to be started with the input queue wired and the depot filter relaxed
 (`acceptAllVehicles=true`) — see `../RUNBOOK.md` → "Live RabbitMQ feed".
 
+## 3. View it on a map
+
+```bash
+./view.sh                            # http://localhost:8090  (OpenStreetMap tiles)
+MAPBOX_TOKEN=pk.xxxx ./view.sh        # Mapbox tiles instead (or put export MAPBOX_TOKEN=... in mq_env.sh)
+```
+
+`viewer.py` taps the position feed (:5563) and the GTFS-RT predictions (:5568), joins them by vehicle id, and
+resolves stop/route ids to **names + coordinates** from the GTFS bundle (`OBA_GTFS_ZIP`, auto-discovered by
+`view.sh`). The map shows a marker per vehicle; click one to plot its upcoming named stops, while the side
+panel lists each vehicle's predicted arrivals with live countdowns. Markers need positions, so run the bridge first.
+
 ## Offset & volume
 
 - `OBA_MQ_OFFSET` (or `--offset`): `last` (recent, default), `next` (only new), `first`, an integer offset,
   or an interval like `1h`/`7D`.
 - The full feed is every NYC bus (~hundreds/sec). For a laptop, cap with `BRIDGE_MAX_RATE` and/or narrow with
   `BRIDGE_DSC_ALLOW` (best — the feed's `route-designator` is an internal code, so filter by destSignCode;
-  e.g. `1010,1150,1420,2040` = M1/M15/M42/M104), `BRIDGE_VEHICLE_ALLOW`, or `BRIDGE_ROUTE_ALLOW` in `mq_env.sh`.
+  e.g. `1010,1150,1420,2040` = M1/M15/M42/M104), `BRIDGE_AGENCY_ALLOW` (e.g. `MTA NYCT` to drop MTABC),
+  `BRIDGE_VEHICLE_ALLOW`, or `BRIDGE_ROUTE_ALLOW` in `mq_env.sh`.
 - Only vehicles whose DSC maps to a trip in the **loaded bundle** (Manhattan B6) will map-match and produce
   predictions; others are ingested but yield no `TripUpdate`.
 

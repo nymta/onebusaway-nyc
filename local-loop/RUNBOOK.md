@@ -189,6 +189,10 @@ cp mq_env.sh.example mq_env.sh       # fill in host / user / password / stream (
 ./observe.sh 120                      # real vehicles' GTFS-RT TripUpdates
 ./mq/stop-bridge.sh
 ```
+**Map view:** `./mq/view.sh`, then open http://localhost:8090 — a Leaflet map of the live vehicles with
+their GTFS-RT predictions (stop **names** + coordinates + countdowns, resolved from the GTFS bundle); click a
+vehicle to plot its upcoming stops. OpenStreetMap tiles by default; `MAPBOX_TOKEN=pk.… ./mq/view.sh` for Mapbox.
+
 The bridge forwards bytes verbatim, so bearing/speed/NMEA all reach the particle filter. The full feed is
 every NYC bus — on a laptop, cap with `BRIDGE_MAX_RATE` or narrow with `BRIDGE_VEHICLE_ALLOW` /
 `BRIDGE_ROUTE_ALLOW` in `mq_env.sh`. Pick where to start with `OBA_MQ_OFFSET` (`last`/`next`/`first`/int/interval).
@@ -270,6 +274,7 @@ Run-time switches (no file edits): `-P local-ie-testing,local-live-feed`, `-Die.
 | `mq/verify.sh` · `verify_stream.py` · `mq_common.py` | RabbitMQ harness: connect + validate the feed format (§8) |
 | `mq/verify_with_oba.sh` | replay captured samples through OBA's real Java deserializer |
 | `mq/bridge.py` · `start-bridge.sh` · `stop-bridge.sh` | forward the RabbitMQ stream onto the ZMQ input queue |
+| `mq/viewer.py` · `view.sh` | map viewer at :8090 (positions + GTFS-RT predictions, GTFS stop/route names) |
 | `mq/mq_env.sh.example` · `mq/README.md` | connection-detail template (copy to git-ignored `mq_env.sh`) + mq docs |
 | `RUNBOOK.md` | this file |
 
