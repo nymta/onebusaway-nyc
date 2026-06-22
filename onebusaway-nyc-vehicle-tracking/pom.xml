@@ -11,6 +11,14 @@
 	<name>onebusaway-nyc-vehicle-tracking</name>
 
 	<dependencies>
+		<!-- Native RabbitMQ stream consumer for the raw BusTech GPS feed (RabbitMqInputQueueListenerTask).
+		     Consumes RabbitMQ Streams over AMQP 0.9.1; pure-Java, JDK 8+. Production alternative to the
+		     local-loop/mq Python bridge. -->
+		<dependency>
+			<groupId>com.rabbitmq</groupId>
+			<artifactId>amqp-client</artifactId>
+			<version>5.16.0</version>
+		</dependency>
 		<dependency>
 			<groupId>org.onebusaway</groupId>
 			<artifactId>onebusaway-nyc-queue-realtime</artifactId>
