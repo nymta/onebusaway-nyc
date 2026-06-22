@@ -24,7 +24,8 @@ MAX_RATE = float(mq_common.env("BRIDGE_MAX_RATE", "0"))           # msgs/sec; 0 
 VEH_ALLOW = set(x.strip() for x in (mq_common.env("BRIDGE_VEHICLE_ALLOW", "") or "").split(",") if x.strip())
 ROUTE_ALLOW = set(x.strip() for x in (mq_common.env("BRIDGE_ROUTE_ALLOW", "") or "").split(",") if x.strip())
 DSC_ALLOW = set(x.strip() for x in (mq_common.env("BRIDGE_DSC_ALLOW", "") or "").split(",") if x.strip())
-FILTERING = bool(VEH_ALLOW or ROUTE_ALLOW or DSC_ALLOW)
+AGENCY_ALLOW = set(x.strip() for x in (mq_common.env("BRIDGE_AGENCY_ALLOW", "") or "").split(",") if x.strip())
+FILTERING = bool(VEH_ALLOW or ROUTE_ALLOW or DSC_ALLOW or AGENCY_ALLOW)
 
 _stop = False
 
@@ -42,6 +43,8 @@ def passes_filter(body):
         ccr = json.loads(body)["RealtimeEnvelope"]["CcLocationReport"]
     except Exception:
         return True  # unparseable here — let OBA be the judge of validity
+    if AGENCY_ALLOW and (ccr.get("vehicle") or {}).get("agencydesignator") not in AGENCY_ALLOW:
+        return False
     if VEH_ALLOW:
         v = ccr.get("vehicle", {})
         vid = "%s_%s" % (v.get("agencydesignator"), v.get("vehicle-id"))
@@ -67,8 +70,8 @@ def main():
     pub.bind("tcp://*:%d" % PORT)
     print("[bridge] ZeroMQ PUB bound tcp://*:%d topic=%r  (inference SUB connects here)" % (PORT, TOPIC), flush=True)
     if FILTERING:
-        print("[bridge] filter: vehicles=%s routes=%s dscs=%s" % (
-            sorted(VEH_ALLOW) or "*", sorted(ROUTE_ALLOW) or "*", sorted(DSC_ALLOW) or "*"), flush=True)
+        print("[bridge] filter: agencies=%s vehicles=%s routes=%s dscs=%s" % (
+            sorted(AGENCY_ALLOW) or "*", sorted(VEH_ALLOW) or "*", sorted(ROUTE_ALLOW) or "*", sorted(DSC_ALLOW) or "*"), flush=True)
     if MAX_RATE > 0:
         print("[bridge] rate cap: %.0f msg/s" % MAX_RATE, flush=True)
     time.sleep(0.3)  # let the PUB settle before first sends

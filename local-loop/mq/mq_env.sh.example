@@ -26,3 +26,4 @@ export BRIDGE_MAX_RATE="0"                            # 0 = unlimited; else max 
 export BRIDGE_VEHICLE_ALLOW=""                        # optional CSV of "agencydesignator_vehicle-id" (e.g. "MTA NYCT_7485"); empty = all
 export BRIDGE_ROUTE_ALLOW=""                          # optional CSV of route-designators (often internal codes in this feed); empty = all
 export BRIDGE_DSC_ALLOW=""                            # optional CSV of destSignCodes (e.g. "1010,1150,1420,2040" = M1/M15/M42/M104); empty = all. Best route filter for this feed.
+export BRIDGE_AGENCY_ALLOW=""                         # optional CSV of agencydesignators (e.g. "MTA NYCT" to exclude MTABC); empty = all
