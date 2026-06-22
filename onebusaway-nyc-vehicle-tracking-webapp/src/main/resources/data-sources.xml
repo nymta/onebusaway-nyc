@@ -85,14 +85,56 @@
 	<!-- Output Queue Configuration -->
 	<!-- This option sends inference output to a TDM configured queue for pickup by an external TDF/TDS -->
 	<!-- This option sends inference output to a local running TDF/TDS -->
-  	<bean id="inferenceOutputQueue" class="org.onebusaway.nyc.vehicle_tracking.impl.queue.${ie.output.queue}">
+  	<!-- local broker-less: seed the output-queue endpoint into ConfigurationService (no TDM) so
+	     OutputQueueSenderServiceImpl connects to the predictions engine on localhost:5566 / inference_queue -->
+	<bean id="ieOutQHost" class="org.springframework.beans.factory.config.MethodInvokingFactoryBean">
+		<property name="targetObject" ref="configurationService"/>
+		<property name="targetMethod" value="updateConfigurationMap"/>
+		<property name="arguments"><list><value>inference-engine.outputQueueHost</value><value>localhost</value></list></property>
+	</bean>
+	<bean id="ieOutQPort" class="org.springframework.beans.factory.config.MethodInvokingFactoryBean">
+		<property name="targetObject" ref="configurationService"/>
+		<property name="targetMethod" value="updateConfigurationMap"/>
+		<property name="arguments"><list><value>inference-engine.outputQueuePort</value><value>5566</value></list></property>
+	</bean>
+	<bean id="ieOutQName" class="org.springframework.beans.factory.config.MethodInvokingFactoryBean">
+		<property name="targetObject" ref="configurationService"/>
+		<property name="targetMethod" value="updateConfigurationMap"/>
+		<property name="arguments"><list><value>inference-engine.outputQueueName</value><value>inference_queue</value></list></property>
+	</bean>
+  	<bean id="inferenceOutputQueue" class="org.onebusaway.nyc.vehicle_tracking.impl.queue.${ie.output.queue}" depends-on="ieOutQHost,ieOutQPort,ieOutQName">
   		<property name="isPrimaryInferenceInstance" value="true"/>
         <property name="primaryHostname" value=""/>
 	</bean>
 
 	<!--  Time Queue Configuration -->
 	<!--  This option integrates with an external time prediction queue -->
-	<bean id="timeInputQueue" class="org.onebusaway.nyc.transit_data_federation.impl.predictions.QueuePredictionIntegrationServiceImpl">
+	<!-- local broker-less (loop-back): seed the time-prediction queue endpoint so this consumer CONNECTs
+	     to the predictions engine at localhost:5568 topic "time" and feeds predictions back into the TDS.
+	     NOTE the port key is tds.timePredictionQueueOutputPort (default 5569); we use 5568. Also requires
+	     -DtimePredictions.status=ENABLED. countInterval=1 makes each consumed message log (proof of receipt). -->
+	<bean id="tdsTimeQHost" class="org.springframework.beans.factory.config.MethodInvokingFactoryBean">
+		<property name="targetObject" ref="configurationService"/>
+		<property name="targetMethod" value="updateConfigurationMap"/>
+		<property name="arguments"><list><value>tds.timePredictionQueueHost</value><value>localhost</value></list></property>
+	</bean>
+	<bean id="tdsTimeQPort" class="org.springframework.beans.factory.config.MethodInvokingFactoryBean">
+		<property name="targetObject" ref="configurationService"/>
+		<property name="targetMethod" value="updateConfigurationMap"/>
+		<property name="arguments"><list><value>tds.timePredictionQueueOutputPort</value><value>5568</value></list></property>
+	</bean>
+	<bean id="tdsTimeQName" class="org.springframework.beans.factory.config.MethodInvokingFactoryBean">
+		<property name="targetObject" ref="configurationService"/>
+		<property name="targetMethod" value="updateConfigurationMap"/>
+		<property name="arguments"><list><value>tds.timePredictionQueueName</value><value>time</value></list></property>
+	</bean>
+	<bean id="tdsUseTimePredictions" class="org.springframework.beans.factory.config.MethodInvokingFactoryBean">
+		<property name="targetObject" ref="configurationService"/>
+		<property name="targetMethod" value="updateConfigurationMap"/>
+		<property name="arguments"><list><value>display.useTimePredictions</value><value>true</value></list></property>
+	</bean>
+	<bean id="timeInputQueue" class="org.onebusaway.nyc.transit_data_federation.impl.predictions.QueuePredictionIntegrationServiceImpl" depends-on="tdsTimeQHost,tdsTimeQPort,tdsTimeQName,tdsUseTimePredictions">
+		<property name="countInterval" value="1"/>
 		<property name="status" value="${timePredictions.status}"/>
 	</bean>
 	
