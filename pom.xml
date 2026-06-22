@@ -218,6 +218,18 @@
     <!-- This is where we control the master plugin version used by all modules -->
         <pluginManagement>
             <plugins>
+                <!-- Local-build fix: this checkout is a git worktree, so .git is a file (a
+                     gitdir pointer), not a directory. The ancient git-commit-id-plugin 2.1.2
+                     can't read that and aborts the build. We don't need embedded git metadata
+                     locally, so tell it to skip gracefully instead of failing. -->
+                <plugin>
+                    <groupId>pl.project13.maven</groupId>
+                    <artifactId>git-commit-id-plugin</artifactId>
+                    <version>2.1.2</version>
+                    <configuration>
+                        <failOnNoGitDirectory>false</failOnNoGitDirectory>
+                    </configuration>
+                </plugin>
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-assembly-plugin</artifactId>
