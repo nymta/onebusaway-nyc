@@ -28,6 +28,7 @@ import com.fasterxml.jackson.module.jaxb.JaxbAnnotationIntrospector;
 import org.onebusaway.gtfs.model.AgencyAndId;
 import org.onebusaway.nyc.queue.model.RealtimeEnvelope;
 import org.onebusaway.nyc.transit_data_federation.services.tdm.VehicleAssignmentService;
+import org.onebusaway.nyc.util.configuration.ConfigurationService;
 import org.onebusaway.nyc.vehicle_tracking.services.inference.VehicleLocationInferenceService;
 import org.onebusaway.nyc.vehicle_tracking.services.queue.InputService;
 import org.slf4j.Logger;
@@ -46,12 +47,18 @@ public abstract class InputServiceImpl {
 	private String[] _depotPartitionKeys = null;
 	private VehicleLocationInferenceService _vehicleLocationService;
 	private VehicleAssignmentService _vehicleAssignmentService;
+	private ConfigurationService _configurationService;
 	private ObjectMapper _mapper;
 
 	@Autowired
 	public void setVehicleAssignmentService(
 			VehicleAssignmentService vehicleAssignmentService) {
 		_vehicleAssignmentService = vehicleAssignmentService;
+	}
+
+	@Autowired
+	public void setConfigurationService(ConfigurationService configurationService) {
+		_configurationService = configurationService;
 	}
 
 	@Autowired
@@ -109,6 +116,14 @@ public abstract class InputServiceImpl {
 	public boolean acceptMessage(RealtimeEnvelope envelope) {
 		if (envelope == null || envelope.getCcLocationReport() == null)
 			return false;
+
+		// local broker-less: when no TDM/depot-assignment data is available, accept every
+		// well-formed envelope. Gated by inference-engine.acceptAllVehicles (default false ->
+		// production behavior is unchanged: the depot-partition filtering below still applies).
+		if (_configurationService != null
+				&& Boolean.parseBoolean(_configurationService.getConfigurationValueAsString(
+						"inference-engine.acceptAllVehicles", "false")))
+			return true;
 
 		final CcLocationReport message = envelope.getCcLocationReport();
 		final ArrayList<AgencyAndId> vehicleList = new ArrayList<AgencyAndId>();

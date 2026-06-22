@@ -72,9 +72,35 @@
     <!-- Input Queue Configuration -->
 	<!-- This option listens to the queue with pilot and SI data on it. -->
 	
-   	<bean id="bhsInputQueue" class="org.onebusaway.nyc.vehicle_tracking.impl.queue.${ie.listener}"> 
+   	<bean id="bhsInputQueue" class="org.onebusaway.nyc.vehicle_tracking.impl.queue.${ie.listener}" depends-on="ieInQHost,ieInQPort,ieInQName,ieAcceptAll"> 
  		<property name="depotPartitionKey" value="${depot.partition.key}"/>
    	</bean>
+
+	<!-- local broker-less LIVE FEED: seed the raw-GPS input-queue endpoint so the REAL
+	     PartitionedInputQueueListenerTask SUB-connects to the local-loop/mq bridge at
+	     localhost:5563 / topic "bustech", and relax depot-partition filtering (no TDM) so every
+	     well-formed envelope is accepted. Active only with -P local-ie-testing,local-live-feed
+	     (the dummy listener ignores these; the HTTP /update-vehicle-location.do path is unaffected). -->
+	<bean id="ieInQHost" class="org.springframework.beans.factory.config.MethodInvokingFactoryBean">
+		<property name="targetObject" ref="configurationService"/>
+		<property name="targetMethod" value="updateConfigurationMap"/>
+		<property name="arguments"><list><value>inference-engine.inputQueueHost</value><value>localhost</value></list></property>
+	</bean>
+	<bean id="ieInQPort" class="org.springframework.beans.factory.config.MethodInvokingFactoryBean">
+		<property name="targetObject" ref="configurationService"/>
+		<property name="targetMethod" value="updateConfigurationMap"/>
+		<property name="arguments"><list><value>inference-engine.inputQueuePort</value><value>5563</value></list></property>
+	</bean>
+	<bean id="ieInQName" class="org.springframework.beans.factory.config.MethodInvokingFactoryBean">
+		<property name="targetObject" ref="configurationService"/>
+		<property name="targetMethod" value="updateConfigurationMap"/>
+		<property name="arguments"><list><value>inference-engine.inputQueueName</value><value>bustech</value></list></property>
+	</bean>
+	<bean id="ieAcceptAll" class="org.springframework.beans.factory.config.MethodInvokingFactoryBean">
+		<property name="targetObject" ref="configurationService"/>
+		<property name="targetMethod" value="updateConfigurationMap"/>
+		<property name="arguments"><list><value>inference-engine.acceptAllVehicles</value><value>true</value></list></property>
+	</bean>
 
 	<!--  for debugging purposes, the TDS can be populated via a JSON file -->
 	<!-- 

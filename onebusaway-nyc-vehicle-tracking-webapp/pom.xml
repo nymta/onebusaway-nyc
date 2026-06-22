@@ -297,7 +297,19 @@
             </activation>
             <properties>
                 <depot.partition.key />
-            </properties>            
+            </properties>
+        </profile>
+
+        <!-- local broker-less LIVE FEED: run the REAL input listener so the RabbitMQ->ZMQ bridge
+             (local-loop/mq) delivers raw BusTech GPS into the particle filter. Declared last so its
+             ie.listener wins when activated alongside local-ie-testing:
+               mvn -P local-ie-testing,local-live-feed ... jetty:run
+             The input queue host/name/port + acceptAllVehicles are seeded in data-sources.xml. -->
+        <profile>
+            <id>local-live-feed</id>
+            <properties>
+                <ie.listener>PartitionedInputQueueListenerTask</ie.listener>
+            </properties>
         </profile>
     </profiles>
 
