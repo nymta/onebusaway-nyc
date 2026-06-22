@@ -70,6 +70,10 @@ public class UpdateVehicleLocationController {
 
     NycRawLocationRecord vlr = new NycRawLocationRecord();
     vlr.setTime(t);
+    // Local fix: the queue path sets timeReceived, but this debug controller did not, so
+    // RecordLibrary.getBestTimestamp() saw |0 - deviceTime| > 30min and collapsed every
+    // injected record to timestamp 0 ("out-of-order. skipping update."). Mirror the device time.
+    vlr.setTimeReceived(t);
     vlr.setVehicleId(AgencyAndIdLibrary.convertFromString(vehicleId));
     vlr.setLatitude(lat);
     vlr.setLongitude(lon);
