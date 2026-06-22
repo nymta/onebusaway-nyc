@@ -8,5 +8,10 @@ port_up "$IE_PORT"   && echo "  inference    : UP   http://localhost:$IE_PORT/ (
 port_up "$PRED_PORT" && echo "  predictions  : UP   http://localhost:$PRED_PORT/api/" || echo "  predictions  : DOWN"
 port_up "$Q_IN"      && echo "  queue $Q_IN   : bound (inferred locations,  topic inference_queue)" || echo "  queue $Q_IN   : down"
 port_up "$Q_OUT"     && echo "  queue $Q_OUT   : bound (GTFS-RT predictions, topic time)" || echo "  queue $Q_OUT   : down"
+if port_up "$IE_INPUT_PORT"; then
+  echo "  mq bridge    : UP   (RabbitMQ -> ZMQ PUB :$IE_INPUT_PORT)$(grep -ho 'forwarded=[0-9]*' "$BRIDGE_LOG" 2>/dev/null | tail -1 | sed 's/^/  /')"
+else
+  echo "  mq bridge    : down (raw RabbitMQ feed not flowing; using inject.sh tracks instead)"
+fi
 grep -q "New bundle is now ready" "$IE_LOG"   2>/dev/null && echo "  ie bundle    : loaded" || echo "  ie bundle    : (not ready)"
 grep -q "time prediction input queue listening" "$IE_LOG" 2>/dev/null && echo "  loop-back    : inference consuming predictions from :$Q_OUT" || echo "  loop-back    : (time consumer not yet listening)"

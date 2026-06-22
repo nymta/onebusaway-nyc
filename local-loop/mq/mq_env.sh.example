@@ -1,0 +1,28 @@
+# RabbitMQ connection details for the live BusTech raw-GPS feed.
+#
+#   cp mq_env.sh.example mq_env.sh   &&   edit mq_env.sh   (mq_env.sh is git-ignored — never commit secrets)
+#
+# Sourced by verify.sh / start-bridge.sh; verify_stream.py & bridge.py also read these from the environment.
+
+# --- broker ---
+export OBA_MQ_HOST="your-broker.rmq.example.com"   # host (or comma-separated cluster: h1,h2,h3 — tried in order)
+export OBA_MQ_PORT="5671"                           # 5671 = AMQPS/TLS (typical), 5672 = plaintext AMQP
+export OBA_MQ_VHOST="/"                              # virtual host
+export OBA_MQ_USER="your-username"
+export OBA_MQ_PASSWORD="your-password"
+
+# --- TLS ---
+export OBA_MQ_TLS="true"                             # true on 5671. false for plaintext 5672
+export OBA_MQ_TLS_INSECURE="false"                   # true to skip cert/hostname verification (self-signed brokers)
+
+# --- the stream ---
+export OBA_MQ_STREAM="bustech.raw.stream"            # the RabbitMQ stream/queue name carrying BusVehicleReportRaw
+export OBA_MQ_OFFSET="last"                           # x-stream-offset: first | last | next | <int offset> | <unix-seconds timestamp>
+
+# --- bridge → inference (Phase B; ignored by the read-only harness) ---
+export IE_INPUT_PORT="5563"                          # ZeroMQ PUB port the bridge binds; == inference-engine.inputQueuePort
+export IE_INPUT_TOPIC="bustech"                      # ZeroMQ topic frame; == inference-engine.inputQueueName seeded in data-sources.xml
+export BRIDGE_MAX_RATE="0"                            # 0 = unlimited; else max messages/sec forwarded (keeps a laptop sane)
+export BRIDGE_VEHICLE_ALLOW=""                        # optional CSV of "agencydesignator_vehicle-id" (e.g. "MTA NYCT_7485"); empty = all
+export BRIDGE_ROUTE_ALLOW=""                          # optional CSV of route-designators (often internal codes in this feed); empty = all
+export BRIDGE_DSC_ALLOW=""                            # optional CSV of destSignCodes (e.g. "1010,1150,1420,2040" = M1/M15/M42/M104); empty = all. Best route filter for this feed.

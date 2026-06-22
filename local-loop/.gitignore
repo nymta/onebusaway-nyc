@@ -1,0 +1,9 @@
+# Local RabbitMQ connection secrets — never commit (use mq/mq_env.sh.example as the tracked template)
+mq/mq_env.sh
+# Captured live payloads from the feed
+mq/samples.jsonl
+# Python bytecode
+mq/__pycache__/
+*.pyc
+# Detached process bookkeeping
+*.pid

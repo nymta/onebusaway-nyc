@@ -26,6 +26,9 @@ Everything below is **local-only** (a dedicated branch + a `.context/` working d
 - **Multiple vehicles on multiple routes at once**, each producing its own diverging predictions
   (demonstrated: M1 on Madison Ave + M15 on 1 Av → distinct trips, stops, and times).
 - **Real, current MTA data**: built from your Manhattan **B6 (Apr 2026) GTFS + STIF** pick (agency `MTA NYCT`).
+- **Live ingest from the real RabbitMQ feed** (BusTech / Cambridge Systematics raw GPS): a verify harness
+  plus a passthrough bridge (`local-loop/mq/`) drive the loop from the actual citywide vehicle stream. The
+  feed's payload is already OBA's `RealtimeEnvelope` format, so no translation is needed — see §8.
 - **Closed loop**: predictions are also fed **back into the inference TDS** (loop-back consumer), so the
   inference engine's transit-data service holds the live predictions (queryable by downstream OBA webapps).
 - **Broker-less**: the two ZeroMQ legs rendezvous directly on localhost (no `queue-broker`).
@@ -55,7 +58,8 @@ Queues (broker-less; **predictions binds, the other side connects**):
 - **Maven** (resolves `repo.camsys-apps.com` **anonymously** — no settings.xml creds needed).
 - **Docker Desktop** running (for Mongo).
 - Repos already built into `~/.m2` (see §4). Branch `rsen/local-gps-predictions` (same branch name in both repos). The large/proprietary bits — the built bundle, GTFS+STIF — stay under the git-ignored `.context/`; only these scripts + runbook are version-controlled.
-- `python3` + `pip install --user pyzmq gtfs-realtime-bindings` (for the observer).
+- `python3` + `pip install --user pyzmq gtfs-realtime-bindings` (for the observer); `+ pika` for the
+  RabbitMQ harness/bridge (§8; `mq/verify.sh` and `mq/start-bridge.sh` auto-install it on first run).
 
 ---
 
@@ -78,7 +82,7 @@ Built from the Manhattan B6 GTFS+STIF you provided, via `FederatedTransitDataBun
 config `.context/manhattan-bundle/bundle-2026Apr_Manhattan_B6.xml` (one `GtfsBundle`, `defaultAgencyId=MTA NYCT`,
 `StifImportTask` over `.context/manhattan-bundle/stif/`). Output:
 `.context/manhattan-bundle/transit-data-bundle/2026Apr_Manhattan_B6/` (116 MB; `TransitGraph.obj`, `CalendarServiceData.obj`, indices).
-Its GTFS calendar covers "today", so it activates with **no date hack**. To rebuild or swap a different pick, see §9.
+Its GTFS calendar covers "today", so it activates with **no date hack**. To rebuild or swap a different pick, see §10.
 
 ---
 
@@ -123,7 +127,7 @@ device time, ending ~now; 2 s apart in wall-clock).
    grep 'MADISON AV' .context/manhattan-bundle/stif/stif.m_0001__.*.wkd.open | grep -oE '40[0-9]{6} +-7[34][0-9]{6}'
    ```
 5. **Timestamps near now** (`getBestTimestamp` ignores device time >30 min from receive time; the loop
-   honours injected `time` because of the controller patch in §8). `inject.sh` handles this automatically.
+   honours injected `time` because of the controller patch in §9). `inject.sh` handles this automatically.
 
 `inject-multi.sh` drives **701=M1 / 702=M15 / 703=M42** concurrently. Note: a vehicleId's particle
 filter retains state, so to re-run cleanly use **fresh ids** or restart the inference webapp.
@@ -155,23 +159,75 @@ Hessian RPC `/transit-data-service`); a downstream `onebusaway-nyc-api-webapp` (
 
 ---
 
-## 8. Local-only edits that make this work
+## 8. Live RabbitMQ feed (real BusTech GPS)
+
+Instead of synthetic `inject.sh` tracks, drive the loop from the **real** BusTech / Cambridge Systematics
+raw-GPS feed (a RabbitMQ **stream**). Each message is already the `RealtimeEnvelope` → `CcLocationReport`
+JSON the inference engine consumes (the same bytes helium-backend's `BusVehicleReportRaw` parses), so **no
+payload translation** is needed — only transport, since OBA's input is ZeroMQ and the feed is RabbitMQ over
+AMQP 0.9.1. All tooling is in `local-loop/mq/` (details in `mq/README.md`).
+
+```
+RabbitMQ stream ──AMQP/TLS──▶ bridge.py ──ZMQ PUB :5563 "bustech"──▶ INFERENCE (real input listener)
+                              (passthrough)                          → 5566 → predictions → 5568 → observer
+```
+
+**a. Connect & verify the format (read-only):**
+```bash
+cd local-loop/mq
+cp mq_env.sh.example mq_env.sh       # fill in host / user / password / stream (mq_env.sh is git-ignored)
+./verify.sh -n 20                     # validate 20 messages against the RealtimeEnvelope contract + capture samples.jsonl
+./verify_with_oba.sh                  # optional: replay samples.jsonl through OBA's real Java deserializer
+```
+`PASS` + "no unknown CcLocationReport keys" confirms the feed matches what OBA expects.
+
+**b. Ingest continuously (full fidelity):**
+```bash
+./start-all.sh                        # inference now runs the REAL input listener (profile local-live-feed)
+./mq/start-bridge.sh                  # RabbitMQ stream → ZMQ :5563; forwards every message unchanged
+./status.sh                           # "mq bridge: UP … forwarded=N"
+./observe.sh 120                      # real vehicles' GTFS-RT TripUpdates
+./mq/stop-bridge.sh
+```
+The bridge forwards bytes verbatim, so bearing/speed/NMEA all reach the particle filter. The full feed is
+every NYC bus — on a laptop, cap with `BRIDGE_MAX_RATE` or narrow with `BRIDGE_VEHICLE_ALLOW` /
+`BRIDGE_ROUTE_ALLOW` in `mq_env.sh`. Pick where to start with `OBA_MQ_OFFSET` (`last`/`next`/`first`/int/interval).
+
+**How it's wired (offline).** `start-all.sh` activates `-P local-ie-testing,local-live-feed`, so the
+`bhsInputQueue` bean is the **real** `PartitionedInputQueueListenerTask` (SUB-**connects** to `localhost:5563`,
+topic `bustech` — the bridge **binds** the PUB). `data-sources.xml` seeds `inference-engine.inputQueue{Host,Port,Name}`
+and `inference-engine.acceptAllVehicles=true`; that flag bypasses depot-partition filtering in
+`InputServiceImpl.acceptMessage`, which otherwise drops every vehicle when there is no TDM assignment data.
+
+**Production path (no Python, no ZMQ hop).** `RabbitMqInputQueueListenerTask` consumes the stream
+**in-process** over AMQP (TLS, `x-stream-offset`, `basic.qos`, manual ack, auto-recovery) and feeds the same
+`InputService` pipeline. Select it with `ie.listener=RabbitMqInputQueueListenerTask` and seed
+`inference-engine.rabbitmq.*` (`addresses`, `username`, `password`, `streamName`, `virtualHost`, `ssl`,
+`offset`, `prefetch`). The `com.rabbitmq:amqp-client` dependency is already in `onebusaway-nyc-vehicle-tracking`.
+
+---
+
+## 9. Local-only edits that make this work
 
 | File | Change | Why |
 |---|---|---|
 | `pom.xml` (main, root) | managed `git-commit-id-plugin` `failOnNoGitDirectory=false` | this checkout is a git **worktree** (`.git` is a file); the 2014 plugin aborts otherwise |
 | `…/vehicle-tracking-webapp/.../controllers/UpdateVehicleLocationController.java` | add `vlr.setTimeReceived(t)` | debug inject path never set it → `getBestTimestamp` collapsed every record to 0 ("out-of-order") |
 | `…/vehicle-tracking-webapp/src/main/resources/data-sources.xml` | seed `inference-engine.outputQueue{Host=localhost,Port=5566,Name=inference_queue}` and `tds.timePredictionQueue{Host=localhost,OutputPort=5568,Name=time}` + `display.useTimePredictions=true` via `MethodInvokingFactoryBean.updateConfigurationMap` on bean **`configurationService`**, with `depends-on` | feed queue endpoints with no TDM; wire the loop-back consumer |
+| `…/vehicle-tracking-webapp/.../data-sources.xml` (live feed) | seed `inference-engine.inputQueue{Host=localhost,Port=5563,Name=bustech}` + `inference-engine.acceptAllVehicles=true`, `depends-on` on `bhsInputQueue` | attach the real input listener to the mq bridge; accept all vehicles with no TDM (§8) |
+| `…/vehicle-tracking/.../impl/queue/InputServiceImpl.java` | gated `acceptAllVehicles` bypass in `acceptMessage` (default false) | the depot-partition filter drops every vehicle without TDM assignment data; production behavior unchanged when the flag is unset |
+| `…/vehicle-tracking-webapp/pom.xml` | add profile `local-live-feed` (`ie.listener=PartitionedInputQueueListenerTask`) | opt-in: run the real input listener instead of the dummy, activated alongside `local-ie-testing` |
+| `…/vehicle-tracking/pom.xml` + `…/impl/queue/RabbitMqInputQueueListenerTask.java` | add `com.rabbitmq:amqp-client` + an in-process AMQP stream listener | production consumer (§8); no Python bridge / ZMQ hop |
 | `…/predictions-webapp/.../application-context-webapp.xml` | `Dummy`ConfigurationServiceImpl, `MonitoringServiceNoOpImpl`, and **bind** all 4 queue beans (5566/5568/5569/5570) | run with no TDM/AWS; broker-less means one side must bind (else `UnknownHostException: null`) |
 | `…/predictions-integration-tests/pom.xml` | added a `graph-builder-execution-2026Apr_Manhattan_B6` exec (now superseded by direct `java` build) | bundle build scaffolding |
 
-Run-time switches (no file edits): `-P local-ie-testing`, `-Die.output.queue=OutputQueueSenderServiceImpl`,
+Run-time switches (no file edits): `-P local-ie-testing,local-live-feed`, `-Die.output.queue=OutputQueueSenderServiceImpl`,
 `-DtimePredictions.status=ENABLED`, `-Dbundle.location=…`, `-Dmongohost/port/user/pwd`, `-DCloudWatchKey/Secret=x`,
 `-Dorg.onebusaway.nyc.tdm.bundle.batchmode=true`, and **Eclipse `jetty-maven-plugin:9.4.51`** (not the pom's mortbay Jetty 6).
 
 ---
 
-## 9. Gotchas / why things are the way they are
+## 10. Gotchas / why things are the way they are
 
 - **Eclipse Jetty 9, not mortbay Jetty 6.** The pom's `maven-jetty-plugin` is Jetty 6 = Servlet 2.5;
   Spring 5.2 calls `HttpServletResponse.getStatus()` (Servlet 3.0) → every request 500s. Jetty 9.4 = Servlet 3.1.
@@ -185,6 +241,13 @@ Run-time switches (no file edits): `-P local-ie-testing`, `-Die.output.queue=Out
   inference *before* the view, so the record is processed.
 - **`DEADHEAD` instead of `IN_PROGRESS`** → bad inject data: coords off-route, fixes too far apart
   (impossible speed), DSC not valid for that route at that time, or vehicle at a terminal. See §6.
+- **Live feed: every vehicle rejected / nothing accepted** → the depot-partition filter. Make sure the
+  webapp ran with `-P local-ie-testing,local-live-feed` (the real listener) and that
+  `inference-engine.acceptAllVehicles=true` is seeded (it is, in `data-sources.xml`). Plain `local-ie-testing`
+  uses the **dummy** listener, which ignores the input queue entirely.
+- **Live feed: bridge up but inference sees nothing** → ZeroMQ PUB/SUB "slow joiner": the bridge drops
+  messages published before the inference SUB has connected. It's a live tail, so this only affects the
+  first moment after either side (re)starts; the bridge re-binds on restart and the SUB auto-reconnects.
 - **Webapps disappear** → they were killed; just `./start-all.sh` again (idempotent).
 - **Rebuild/swap the bundle** (different borough/pick): drop GTFS+STIF under `.context/<name>/`, write a
   `bundle-<name>.xml` (1 `GtfsBundle` with `defaultAgencyId=MTA NYCT` + `StifImportTask`), then
@@ -195,7 +258,7 @@ Run-time switches (no file edits): `-P local-ie-testing`, `-Die.output.queue=Out
 
 ---
 
-## 10. File map (`local-loop/`, tracked at the main-repo root)
+## 11. File map (`local-loop/`, tracked at the main-repo root)
 
 | File | Purpose |
 |---|---|
@@ -204,7 +267,12 @@ Run-time switches (no file edits): `-P local-ie-testing`, `-Die.output.queue=Out
 | `inject.sh` | inject one vehicle's GPS track |
 | `inject-multi.sh` | 3 vehicles / 3 routes at once |
 | `observe.sh` / `obs_time.py` | decode the GTFS-RT prediction queue |
+| `mq/verify.sh` · `verify_stream.py` · `mq_common.py` | RabbitMQ harness: connect + validate the feed format (§8) |
+| `mq/verify_with_oba.sh` | replay captured samples through OBA's real Java deserializer |
+| `mq/bridge.py` · `start-bridge.sh` · `stop-bridge.sh` | forward the RabbitMQ stream onto the ZMQ input queue |
+| `mq/mq_env.sh.example` · `mq/README.md` | connection-detail template (copy to git-ignored `mq_env.sh`) + mq docs |
 | `RUNBOOK.md` | this file |
 
 Bundle + builder config live in `.context/manhattan-bundle/`. Webapp logs: `/tmp/oba-ie-jetty.log`,
-`/tmp/oba-pred-jetty.log`.
+`/tmp/oba-pred-jetty.log`; bridge log: `/tmp/oba-mq-bridge.log`. RabbitMQ secrets (`mq/mq_env.sh`) and
+captured payloads (`mq/samples.jsonl`) are **git-ignored** — only `mq/*.example`, `*.py`, `*.sh`, `README.md` are tracked.

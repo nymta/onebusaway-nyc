@@ -30,7 +30,7 @@ if port_up "$IE_PORT"; then
 else
   echo "inference: starting (Jetty 9 :$IE_PORT, real output queue + time-prediction loop-back)..."
   ( cd "$MAIN_REPO" && nohup "$MVN" -f onebusaway-nyc-vehicle-tracking-webapp/pom.xml \
-      -P local-ie-testing -DskipTests -B \
+      -P local-ie-testing,local-live-feed -DskipTests -B \
       -Die.output.queue=OutputQueueSenderServiceImpl \
       -DtimePredictions.status=ENABLED \
       -Dorg.onebusaway.nyc.tdm.bundle.batchmode=true \
@@ -42,4 +42,6 @@ else
 fi
 
 echo; "$HERE/status.sh"
-echo; echo "Loop is up. Inject with:  $HERE/inject-multi.sh   (watch with: $HERE/observe.sh)"
+echo; echo "Loop is up."
+echo "  synthetic GPS :  $HERE/inject-multi.sh        (watch: $HERE/observe.sh)"
+echo "  live RabbitMQ :  $HERE/mq/start-bridge.sh     (verify first: $HERE/mq/verify.sh)"

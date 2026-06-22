@@ -21,10 +21,12 @@ IE_PORT=8081      # inference webapp (HTTP)
 PRED_PORT=8082    # predictions webapp (HTTP, /api)
 Q_IN=5566         # inferred-locations queue: predictions BINDS, inference CONNECTS  (topic inference_queue)
 Q_OUT=5568        # GTFS-RT time predictions:  predictions BINDS, consumers CONNECT (topic time)
+IE_INPUT_PORT="${IE_INPUT_PORT:-5563}"   # raw-GPS input queue: mq bridge BINDS (PUB), inference CONNECTS (SUB, topic bustech)
 
 # --- logs ---
 IE_LOG=/tmp/oba-ie-jetty.log
 PRED_LOG=/tmp/oba-pred-jetty.log
+BRIDGE_LOG=/tmp/oba-mq-bridge.log
 MONGO_NAME=oba-mongo
 
 port_up(){ lsof -ti:"$1" >/dev/null 2>&1; }
