@@ -34,12 +34,15 @@ import org.springframework.web.servlet.ModelAndView;
 @Controller
 public class UpdateVehicleLocationController {
 
-  private static SimpleDateFormat _format = new SimpleDateFormat(
-      "yyyy-MM-dd' 'HH:mm:ss");
-
-  static {
-    _format.setTimeZone(TimeZone.getTimeZone("America/New_York"));
-  }
+  // Local fix: SimpleDateFormat is NOT thread-safe, and this debug inject endpoint gets hit
+  // concurrently (inject-multi.sh drives several vehicles at once). A single shared instance
+  // corrupts under concurrent parse() -> sporadic NumberFormatException. One formatter per thread.
+  private static final ThreadLocal<SimpleDateFormat> _format =
+      ThreadLocal.withInitial(() -> {
+        SimpleDateFormat format = new SimpleDateFormat("yyyy-MM-dd' 'HH:mm:ss");
+        format.setTimeZone(TimeZone.getTimeZone("America/New_York"));
+        return format;
+      });
 
   private VehicleLocationInferenceService _vehicleLocationService;
 
@@ -64,7 +67,7 @@ public class UpdateVehicleLocationController {
     long t = System.currentTimeMillis();
 
     if (time != null && ! time.trim().isEmpty()) {
-      Date date = _format.parse(time);
+      Date date = _format.get().parse(time);
       t = date.getTime();
     }
 
