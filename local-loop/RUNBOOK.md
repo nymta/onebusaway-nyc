@@ -25,7 +25,7 @@ Everything below is **local-only** (a dedicated branch + a `.context/` working d
   and emits **GTFS-RT `TripUpdate`s** with per-stop predicted times.
 - **Multiple vehicles on multiple routes at once**, each producing its own diverging predictions
   (demonstrated: M1 on Madison Ave + M15 on 1 Av → distinct trips, stops, and times).
-- **Real, current MTA data**: built from your Manhattan **B6 (Apr 2026) GTFS + STIF** pick (agency `MTA NYCT`).
+- **Real, current MTA data**: built from your Manhattan **C6 (Jun 2026) GTFS + STIF** pick (agency `MTA NYCT`); refresh to new picks per §10.
 - **Live ingest from the real RabbitMQ feed** (BusTech / Cambridge Systematics raw GPS): a verify harness
   plus a passthrough bridge (`local-loop/mq/`) drive the loop from the actual citywide vehicle stream. The
   feed's payload is already OBA's `RealtimeEnvelope` format, so no translation is needed — see §8.
@@ -42,7 +42,7 @@ Everything below is **local-only** (a dedicated branch + a `.context/` working d
 | **Inference webapp** | `onebusaway-nyc-vehicle-tracking-webapp` (2.44.39) — particle-filter inference | HTTP **8081**; PUB→**5566**; SUB←**5568** | Eclipse Jetty 9 (`jetty-maven-plugin`) |
 | **Predictions webapp** | `onebusaway-nyc-predictions-webapp` (`develop`, 1.4-SNAPSHOT) — prognosticator | HTTP **8082** `/api`; SUB-bind **5566**; PUB-bind **5568** | Eclipse Jetty 9 |
 | **MongoDB** | predictions persistence (historical lattice) | **27017** | Docker `mongo:4.4` (container `oba-mongo`) |
-| **Bundle** | compiled transit graph (`2026Apr_Manhattan_B6`) | — | loaded by both webapps from `.context/manhattan-bundle/transit-data-bundle/` |
+| **Bundle** | compiled transit graph (`2026Jun_Manhattan_C6`) | — | loaded by both webapps from `.context/manhattan-bundle/transit-data-bundle/` |
 | **Observer** | pyzmq GTFS-RT subscriber | connects 5568 | `obs_time.py` |
 
 Queues (broker-less; **predictions binds, the other side connects**):
@@ -78,10 +78,10 @@ Version note: main stays at **2.44.39**, predictions on **develop** (parent 2.47
 `NycQueuedInferredLocationBean` JSON wire contract is identical across the two, so they interoperate unchanged.
 
 ### The bundle
-Built from the Manhattan B6 GTFS+STIF you provided, via `FederatedTransitDataBundleCreatorMain`:
-config `.context/manhattan-bundle/bundle-2026Apr_Manhattan_B6.xml` (one `GtfsBundle`, `defaultAgencyId=MTA NYCT`,
-`StifImportTask` over `.context/manhattan-bundle/stif/`). Output:
-`.context/manhattan-bundle/transit-data-bundle/2026Apr_Manhattan_B6/` (116 MB; `TransitGraph.obj`, `CalendarServiceData.obj`, indices).
+Built from the Manhattan C6 GTFS+STIF you provided, via `FederatedTransitDataBundleCreatorMain`:
+config `.context/manhattan-bundle/bundle-2026Jun_Manhattan_C6.xml` (one `GtfsBundle`, `defaultAgencyId=MTA NYCT`,
+`StifImportTask` over `.context/manhattan-bundle/stif-c6/`). Output:
+`.context/manhattan-bundle/transit-data-bundle/2026Jun_Manhattan_C6/` (116 MB; `TransitGraph.obj`, `CalendarServiceData.obj`, indices).
 Its GTFS calendar covers "today", so it activates with **no date hack**. To rebuild or swap a different pick, see §10.
 
 ---
@@ -223,7 +223,7 @@ and `inference-engine.acceptAllVehicles=true`; that flag bypasses depot-partitio
 | `…/vehicle-tracking-webapp/pom.xml` | add profile `local-live-feed` (`ie.listener=PartitionedInputQueueListenerTask`) | opt-in: run the real input listener instead of the dummy, activated alongside `local-ie-testing` |
 | `…/vehicle-tracking/pom.xml` + `…/impl/queue/RabbitMqInputQueueListenerTask.java` | add `com.rabbitmq:amqp-client` + an in-process AMQP stream listener | production consumer (§8); no Python bridge / ZMQ hop |
 | `…/predictions-webapp/.../application-context-webapp.xml` | `Dummy`ConfigurationServiceImpl, `MonitoringServiceNoOpImpl`, and **bind** all 4 queue beans (5566/5568/5569/5570) | run with no TDM/AWS; broker-less means one side must bind (else `UnknownHostException: null`) |
-| `…/predictions-integration-tests/pom.xml` | added a `graph-builder-execution-2026Apr_Manhattan_B6` exec (now superseded by direct `java` build) | bundle build scaffolding |
+| `…/predictions-integration-tests/pom.xml` | added `graph-builder-execution-<pick>` execs (historical; superseded by the direct `java` build in §10) | bundle build scaffolding |
 
 Run-time switches (no file edits): `-P local-ie-testing,local-live-feed`, `-Die.output.queue=OutputQueueSenderServiceImpl`,
 `-DtimePredictions.status=ENABLED`, `-Dbundle.location=…`, `-Dmongohost/port/user/pwd`, `-DCloudWatchKey/Secret=x`,
@@ -253,12 +253,15 @@ Run-time switches (no file edits): `-P local-ie-testing,local-live-feed`, `-Die.
   messages published before the inference SUB has connected. It's a live tail, so this only affects the
   first moment after either side (re)starts; the bridge re-binds on restart and the SUB auto-reconnects.
 - **Webapps disappear** → they were killed; just `./start-all.sh` again (idempotent).
-- **Rebuild/swap the bundle** (different borough/pick): drop GTFS+STIF under `.context/<name>/`, write a
-  `bundle-<name>.xml` (1 `GtfsBundle` with `defaultAgencyId=MTA NYCT` + `StifImportTask`), then
-  `java -Xmx4g -Dlog4j.configuration=file:/tmp/log4j.properties -cp "$(cat /tmp/bundle-cp.txt)" org.onebusaway.transit_data_federation.bundle.FederatedTransitDataBundleCreatorMain <bundle.xml> <outdir>`
-  (classpath via `mvn -pl onebusaway-nyc-predictions-integration-tests dependency:build-classpath`).
-  Do **not** nest the output dir inside the resources dir (infinite-recursion bug); don't pass
-  `-additionalResourcesDirectory` pointing at a parent of the output.
+- **Rebuild/refresh the bundle for a new pick** (what was done for C6): drop the new `GTFS_*.zip` + `STIF_*.zip`
+  under `.context/manhattan-bundle/`, `unzip` the STIF into a per-pick dir `stif-<pick>/`, and write
+  `bundle-<pick>.xml` (copy an existing one; point `GtfsBundle.path` at the new GTFS zip, `StifImportTask.stifPath`
+  at `stif-<pick>/`, keep `defaultAgencyId=MTA NYCT` + `NotInServiceDSCs.txt`). Build with:
+  `mvn -f <predictions>/pom.xml -pl onebusaway-nyc-predictions-integration-tests dependency:build-classpath -Dmdep.outputFile=/tmp/cp.txt -Dmdep.includeScope=test`
+  then `java -Xmx4g -Dlog4j.configuration=file:/tmp/log4j.properties -cp "$(cat /tmp/cp.txt)" org.onebusaway.transit_data_federation.bundle.FederatedTransitDataBundleCreatorMain <bundle-<pick>.xml> <transit-data-bundle/<pick>>`.
+  Then **make it the active bundle**: move the prior bundle dir *and* the loose `onebusaway_nyc.*`/`org_onebusaway_database.*`
+  files out of `transit-data-bundle/` (archive them) so it holds exactly one bundle; the viewer auto-uses the newest
+  `GTFS_*.zip`. Do **not** pass `-additionalResourcesDirectory` pointing at a parent of the output (infinite-recursion bug).
 
 ---
 

@@ -73,7 +73,7 @@ New/changed for production is mostly **assembly, data, and ops**, not core algor
 
 | # | Workstream | Gap from POC | Effort |
 |---|---|---|---|
-| **A** | **Whole-MTA bundle (incl. MTABC + Express)** | POC = one hand-built Manhattan B6 bundle | **L** |
+| **A** | **Whole-MTA bundle (incl. MTABC + Express)** | POC = one hand-built single-pick Manhattan bundle | **L** |
 | **B** | **Scale & ingestion** | POC = 4 DSCs on a laptop | **M–L** |
 | **C** | **Serve the feed + id alignment** | POC emits to a local ZMQ topic only | **S–M** |
 | **D** | **Prediction quality (weighting + history)** | POC = schedule-only, empty Mongo | **M** + warm-up time |

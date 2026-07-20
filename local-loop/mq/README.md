@@ -76,7 +76,7 @@ panel lists each vehicle's predicted arrivals with live countdowns. Markers need
   `BRIDGE_DSC_ALLOW` (best — the feed's `route-designator` is an internal code, so filter by destSignCode;
   e.g. `1010,1150,1420,2040` = M1/M15/M42/M104), `BRIDGE_AGENCY_ALLOW` (e.g. `MTA NYCT` to drop MTABC),
   `BRIDGE_VEHICLE_ALLOW`, or `BRIDGE_ROUTE_ALLOW` in `mq_env.sh`.
-- Only vehicles whose DSC maps to a trip in the **loaded bundle** (Manhattan B6) will map-match and produce
+- Only vehicles whose DSC maps to a trip in the **loaded bundle** (the current Manhattan pick) will map-match and produce
   predictions; others are ingested but yield no `TripUpdate`.
 
 ## Security

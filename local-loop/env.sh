@@ -14,7 +14,7 @@ JETTY="org.eclipse.jetty:jetty-maven-plugin:9.4.51.v20230217"   # Servlet 3.1 (r
 MAIN_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # External predictions checkout + built-bundle parent — override via env vars if yours differ.
 PRED_REPO="${OBA_PRED_REPO:-/Users/ranajays/Documents/git/onebusaway-nyc-predictions}"
-BUNDLE_PARENT="${OBA_BUNDLE_PARENT:-$MAIN_REPO/.context/manhattan-bundle/transit-data-bundle}"   # parent dir; holds 2026Apr_Manhattan_B6
+BUNDLE_PARENT="${OBA_BUNDLE_PARENT:-$MAIN_REPO/.context/manhattan-bundle/transit-data-bundle}"   # parent dir; holds the current pick's bundle (e.g. 2026Jun_Manhattan_C6)
 
 # --- ports ---
 IE_PORT=8081      # inference webapp (HTTP)
