@@ -137,6 +137,10 @@ public class VehicleLocationInferenceServiceImpl implements
 
   private int _skippedUpdateLogCounter = 0;
 
+  // Load-shedding of stale queued fixes (default off; enabled via -Doba.shed.maxAgeSec).
+  private long _shedStaleMs = 0L;
+  private final java.util.concurrent.atomic.AtomicLong _shedStaleCount = new java.util.concurrent.atomic.AtomicLong();
+
   private int _numberOfProcessingThreads = 2 + (Runtime.getRuntime().availableProcessors() * 20);
   
   private final ConcurrentMap<AgencyAndId, VehicleInferenceInstance> _vehicleInstancesByVehicleId = new ConcurrentHashMap<AgencyAndId, VehicleInferenceInstance>();
@@ -198,6 +202,15 @@ public class VehicleLocationInferenceServiceImpl implements
     _threadPoolExecutor = (ThreadPoolExecutor) Executors.newFixedThreadPool(_numberOfProcessingThreads);
     _executorService = _threadPoolExecutor;
 
+    try {
+      final long sec = Long.parseLong(System.getProperty("oba.shed.maxAgeSec", "0"));
+      _shedStaleMs = sec > 0 ? sec * 1000L : 0L;
+    } catch (final NumberFormatException e) {
+      _shedStaleMs = 0L;
+    }
+    if (_shedStaleMs > 0)
+      _log.info("stale-fix load-shedding ENABLED: skip queued fixes older than "
+          + (_shedStaleMs / 1000) + "s (oba.shed.maxAgeSec)");
   }
   
   @PreDestroy
@@ -732,6 +745,18 @@ public class VehicleLocationInferenceServiceImpl implements
     public void run() {
       long start = System.currentTimeMillis();
       long stop = 0;
+      // Load-shedding: if this fix waited in the queue past the staleness threshold, skip the
+      // (expensive) inference so the engine catches up to fresh data instead of processing a
+      // minute-old position. Default off (_shedStaleMs=0). Skipped tasks still "complete" cheaply.
+      if (_shedStaleMs > 0 && !_simulation && _nycRawLocationRecord != null
+          && (System.currentTimeMillis() - _nycRawLocationRecord.getTimeReceived()) > _shedStaleMs) {
+        final long n = _shedStaleCount.incrementAndGet();
+        if (n % 1000 == 0)
+          _log.warn("load-shedding: shedStaleTotal=" + n + " (skipping queued fixes older than "
+              + (_shedStaleMs / 1000) + "s); backlog="
+              + _bundleManagementService.getInferenceProcessingThreadQueueSize());
+        return;
+      }
     	try {
     		if (_simulation) {
     			setupSimulationBeforeRun();
@@ -795,7 +820,7 @@ public class VehicleLocationInferenceServiceImpl implements
                       + " active vehicles and " + _bundleManagementService.getInferenceProcessingThreadQueueSize()
                       + " outstanding threads not reaped"
                       + " with avg processing time " + computeProcessingTime(_timeSpentByVehicleId.values())
-                      + "ms"
+                      + "ms shedStaleTotal=" + _shedStaleCount.get()
               );
               _timeSpentByVehicleId.clear();
             }

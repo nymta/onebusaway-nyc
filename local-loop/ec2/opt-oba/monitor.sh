@@ -35,4 +35,15 @@ put TripUpdateEntities   Count   "$ents"
 put DataDiskUsedPct      Percent "$disk"
 [ -n "${backlog:-}" ] && put InferenceBacklogThreads Count "$backlog"
 
-echo "monitor: servicesDown=$down stale=${stale}s entities=$ents disk=${disk}% backlog=${backlog:-n/a}"
+# stale-fix load-shedding: fixes shed since last run (delta of the cumulative shedStaleTotal counter)
+shed_now=$(journalctl -u oba-inference --since "-6 min" --no-pager 2>/dev/null \
+           | grep -aoE "shedStaleTotal=[0-9]+" | tail -1 | grep -oE "[0-9]+")
+shed_delta="n/a"
+if [ -n "${shed_now:-}" ]; then
+  shed_prev=$(grep -oE "^[0-9]+" /opt/oba/.shed_last 2>/dev/null || true)
+  if [ -n "${shed_prev:-}" ] && [ "$shed_now" -ge "$shed_prev" ]; then shed_delta=$((shed_now - shed_prev)); else shed_delta=$shed_now; fi
+  echo "$shed_now" > /opt/oba/.shed_last
+  put InferenceShedFixes Count "$shed_delta"
+fi
+
+echo "monitor: servicesDown=$down stale=${stale}s entities=$ents disk=${disk}% backlog=${backlog:-n/a} shedSinceLast=$shed_delta"

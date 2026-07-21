@@ -11,6 +11,7 @@ exec mvn -B -P local-ie-testing -DskipTests -Dlicense.skip=true \
   -Dbundle.location="$BUNDLE" \
   -Djetty.http.port=8081 \
   -Doba.deadband.enabled=true -Doba.deadband.minMeters=10 -Doba.deadband.minIntervalSec=5 -Doba.deadband.maxAgeSec=30 \
+  -Doba.shed.maxAgeSec=50 \
   -Doba.rmq.addresses="$(gp /oba/rabbitmq/addresses)" \
   -Doba.rmq.username="$(gp /oba/rabbitmq/username)" \
   -Doba.rmq.password="$(gp /oba/rabbitmq/password)" \
