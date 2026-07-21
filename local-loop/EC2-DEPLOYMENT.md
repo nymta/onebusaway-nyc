@@ -72,6 +72,7 @@ All app ports (8081/8082/8083, broker 5566/5567, predictions-time 5568, Mongo 27
 7. **SSM-only admin, no SSH.** Security group has no port 22; all admin via AWS SSM (Session Manager / Send-Command). Secrets in SSM Parameter Store. Nothing tied to a changing source IP.
 8. **nginx GET-only allowlist in front.** The gtfsrt-webapp also exposes injection POSTs (`/input/*`) and Hessian remoting (`/transit-data-service`, `/configuration-service`) on :8083. nginx forwards **only** GET/HEAD on the 3 read feeds and 404s the rest, so those stay unreachable from the internet.
 9. **Deploy via GitHub Action → SSM (no inbound SSH).** OIDC-assumed IAM role runs `/opt/oba/deploy.sh` over SSM.
+10. **Stale-fix load-shedding (peak safety net).** `VehicleLocationInferenceServiceImpl.ProcessingTask` skips the particle-filter update for a queued fix whose **queue-age** (`now − timeReceived`) exceeds `-Doba.shed.maxAgeSec` (default 0 = off; **50 s here**). Under peak overload it drains the stale tail so the engine stays caught up to real time and never OOMs — trading coverage (some fixes skipped) for freshness. Complements the deadband (which trims inflow); shedding drops the backlog inflow still can't cover. Like the deadband, it is **default-off in code and enabled only via the launch flags** on this host. (Validated 2026-07-21: at a 5 s test threshold, backlog fell 3.8k→2.2k while feed age held ~8 s.)
 
 ---
 
@@ -95,6 +96,7 @@ Host `/opt/oba` (user `oba`): the two repo clones, wrapper scripts `run-{broker,
 - **Deploy:** GitHub Action `.github/workflows/deploy.yml` (`workflow_dispatch`, modes `deploy` | `set-weights`) → OIDC role → `aws ssm send-command` runs `/opt/oba/deploy.sh`. `deploy.sh deploy <ref>` git-pulls both repos, rebuilds broker + vehicle-tracking(+webapp) + gtfsrt-webapp + predictions-webapp, restarts, smoke-checks.
 - **Tune weights:** `deploy.sh set-weights S H R` (validates sum=100, updates the SSM param, live-POSTs) — no restart.
 - **Tune the deadband:** edit `-Doba.deadband.*` in `/opt/oba/run-inference.sh`, `systemctl restart oba-inference` (no rebuild). Widen `minMeters`→15 or `minIntervalSec`→7 to shed load; lower for finer cadence.
+- **Tune load-shedding:** edit `-Doba.shed.maxAgeSec` in `/opt/oba/run-inference.sh` + `systemctl restart oba-inference`. Lower (e.g. 30 s) → tighter freshness cap + more shedding; `0` disables it.
 - **Resize instance:** stop → `modify-instance-attribute --instance-type` → start (EBS + EIP persist). **Re-tune JVM heaps** in the `run-*.sh` for the new RAM.
 - **Refresh the bundle** (new pick): upload GTFS+STIF → S3, pull to `/data/bundle-src`, author `bundle-*.xml`, build with `FederatedTransitDataBundleCreatorMain`, move the new bundle into `/data/oba-bundle`, archive the old one, restart.
 - **Interactive admin:** `aws ssm start-session --target i-0386b6bb8338b2f67` (needs the session-manager-plugin locally) or scripted `aws ssm send-command`.
@@ -122,12 +124,13 @@ Host `/opt/oba` (user `oba`): the two repo clones, wrapper scripts `run-{broker,
 | `TripUpdateEntities` | entity count in `/tripUpdates` (feed populated) | < 100 |
 | `DataDiskUsedPct` | `/data` used % (Mongo growth) | > 85 |
 | `InferenceBacklogThreads` | inference queue backlog (divergence signal) | > 25000 |
+| `InferenceShedFixes` | stale fixes dropped per ~2-min interval (load-shed volume; §4.10) | > 10000 |
 | `CPUUtilization` (AWS/EC2, built-in) | instance CPU | > 90% for 15 min |
 
-- **6 alarms** (name prefix `oba-`) are defined but currently have **no notification action** — they only drive red/green status on the dashboard. Wiring email/Slack is a one-liner later: create an SNS topic and `aws cloudwatch put-metric-alarm --alarm-actions <topic-arn>`.
+- **7 alarms** (name prefix `oba-`) are defined but currently have **no notification action** — they only drive red/green status on the dashboard. Wiring email/Slack is a one-liner later: create an SNS topic and `aws cloudwatch put-metric-alarm --alarm-actions <topic-arn>`.
 - Signals used (there is no built-in `/health`): GTFS-RT `header.timestamp` (= last successful 10 s refresh), `systemctl is-active`, the mongo container state, and the inference WARN "outstanding threads not reaped" line via `journalctl`.
 
-> **Live observation (2026-07-21):** the dashboard immediately showed the 5 s-while-moving deadband **diverging at PM peak** (~4,840 active vehicles: `InferenceBacklogThreads` climbing 23.7k→24.2k, load ~28/32). It fits off-peak (~3,600) but not at peak on 32 vCPU (see §9). Left as-is per decision; the dashboard tracks it.
+> **Live observation (2026-07-21):** the dashboard first showed the 5 s-while-moving deadband **diverging at PM peak** (~4,840 vehicles: `InferenceBacklogThreads` 23.7k→24.2k, load ~28/32) — fits off-peak (~3,600) but not peak on 32 vCPU. **Load-shedding (§4.10) was then added to cap it:** at peak the queue drains stale fixes instead of growing unbounded, holding lag ≤ ~50 s and preventing OOM. Watch `InferenceShedFixes` (drop volume) alongside `InferenceBacklogThreads` at peak.
 
 ---
 
@@ -139,7 +142,7 @@ Host `/opt/oba` (user `oba`): the two repo clones, wrapper scripts `run-{broker,
 - **On-demand pricing** (~$1,042/mo; no commitment).
 - **Warm-up:** historical/recent weights need days–weeks of Mongo data before they meaningfully help.
 - **Mongo disk growth:** `LinkTravelTimes` archives every observation → `/data` will fill over time (no TTL yet).
-- **Peak headroom (confirmed):** the current 5 s-while-moving deadband **diverges at PM peak** (~4,840 vehicles → inference backlog climbs, load ~28/32); it holds off-peak (~3,600). Fix by widening the deadband (`minIntervalSec`→7-10 / `minMeters`→15-20 in `run-inference.sh` + restart) or resizing to c7i.12xlarge. Tracked on the §8 dashboard.
+- **Peak headroom:** at PM peak (~4,840 vehicles) the 5 s-while-moving deadband alone would diverge on 32 vCPU; **load-shedding (§4.10, 50 s) now caps it** — under peak it drops stale queued fixes so lag stays ≤ ~50 s and it won't OOM, at the cost of **reduced coverage** (some fixes skipped) during the peak. For fuller peak coverage without shedding, widen the deadband (`minIntervalSec`→7-10) or resize to c7i.12xlarge. Watch `InferenceShedFixes` + `InferenceBacklogThreads` on the §8 dashboard.
 - **Host config** is **now committed** to [`local-loop/ec2/`](ec2/) (scripts, systemd units, nginx, bundle config; secrets excluded) — no longer host-only.
 - **GitHub Action:** `workflow_dispatch` only becomes runnable once `deploy.yml` is on the repo **default branch**.
 
