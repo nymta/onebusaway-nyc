@@ -1,0 +1,11 @@
+[Unit]
+Description=OBA-NYC apply prediction weights via /api/weight (from SSM /oba/predictions/weights)
+After=oba-predictions.service
+PartOf=oba-predictions.service
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=oba
+ExecStart=/opt/oba/set-weights.sh
+[Install]
+WantedBy=oba-predictions.service

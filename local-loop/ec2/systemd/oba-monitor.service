@@ -1,0 +1,6 @@
+[Unit]
+Description=OBA-NYC monitoring -> CloudWatch OBA/Prod metrics
+After=network-online.target
+[Service]
+Type=oneshot
+ExecStart=/opt/oba/monitor.sh
