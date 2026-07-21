@@ -72,7 +72,7 @@
     <!-- Input Queue Configuration -->
 	<!-- This option listens to the queue with pilot and SI data on it. -->
 	
-   	<bean id="bhsInputQueue" class="org.onebusaway.nyc.vehicle_tracking.impl.queue.${ie.listener}" depends-on="ieInQHost,ieInQPort,ieInQName,ieAcceptAll"> 
+   	<bean id="bhsInputQueue" class="org.onebusaway.nyc.vehicle_tracking.impl.queue.${ie.listener}" depends-on="ieInQHost,ieInQPort,ieInQName,ieAcceptAll,ieRmqAddr,ieRmqUser,ieRmqPass,ieRmqStream,ieRmqVhost,ieRmqSsl,ieRmqOffset,ieRmqPrefetch"> 
  		<property name="depotPartitionKey" value="${depot.partition.key}"/>
    	</bean>
 
@@ -100,6 +100,50 @@
 		<property name="targetObject" ref="configurationService"/>
 		<property name="targetMethod" value="updateConfigurationMap"/>
 		<property name="arguments"><list><value>inference-engine.acceptAllVehicles</value><value>true</value></list></property>
+	</bean>
+
+	<!-- production RabbitMQ ingestion (in-process RabbitMqInputQueueListenerTask): seed inference-engine.rabbitmq.*
+	     from -Doba.rmq.* system properties, which the systemd unit populates from SSM Parameter Store at launch.
+	     Selected by -Die.listener=RabbitMqInputQueueListenerTask (the ${ie.listener} above). -->
+	<bean id="ieRmqAddr" class="org.springframework.beans.factory.config.MethodInvokingFactoryBean">
+		<property name="targetObject" ref="configurationService"/>
+		<property name="targetMethod" value="updateConfigurationMap"/>
+		<property name="arguments"><list><value>inference-engine.rabbitmq.addresses</value><value>${oba.rmq.addresses}</value></list></property>
+	</bean>
+	<bean id="ieRmqUser" class="org.springframework.beans.factory.config.MethodInvokingFactoryBean">
+		<property name="targetObject" ref="configurationService"/>
+		<property name="targetMethod" value="updateConfigurationMap"/>
+		<property name="arguments"><list><value>inference-engine.rabbitmq.username</value><value>${oba.rmq.username}</value></list></property>
+	</bean>
+	<bean id="ieRmqPass" class="org.springframework.beans.factory.config.MethodInvokingFactoryBean">
+		<property name="targetObject" ref="configurationService"/>
+		<property name="targetMethod" value="updateConfigurationMap"/>
+		<property name="arguments"><list><value>inference-engine.rabbitmq.password</value><value>${oba.rmq.password}</value></list></property>
+	</bean>
+	<bean id="ieRmqStream" class="org.springframework.beans.factory.config.MethodInvokingFactoryBean">
+		<property name="targetObject" ref="configurationService"/>
+		<property name="targetMethod" value="updateConfigurationMap"/>
+		<property name="arguments"><list><value>inference-engine.rabbitmq.streamName</value><value>${oba.rmq.streamName}</value></list></property>
+	</bean>
+	<bean id="ieRmqVhost" class="org.springframework.beans.factory.config.MethodInvokingFactoryBean">
+		<property name="targetObject" ref="configurationService"/>
+		<property name="targetMethod" value="updateConfigurationMap"/>
+		<property name="arguments"><list><value>inference-engine.rabbitmq.virtualHost</value><value>${oba.rmq.virtualHost}</value></list></property>
+	</bean>
+	<bean id="ieRmqSsl" class="org.springframework.beans.factory.config.MethodInvokingFactoryBean">
+		<property name="targetObject" ref="configurationService"/>
+		<property name="targetMethod" value="updateConfigurationMap"/>
+		<property name="arguments"><list><value>inference-engine.rabbitmq.ssl</value><value>${oba.rmq.ssl}</value></list></property>
+	</bean>
+	<bean id="ieRmqOffset" class="org.springframework.beans.factory.config.MethodInvokingFactoryBean">
+		<property name="targetObject" ref="configurationService"/>
+		<property name="targetMethod" value="updateConfigurationMap"/>
+		<property name="arguments"><list><value>inference-engine.rabbitmq.offset</value><value>${oba.rmq.offset}</value></list></property>
+	</bean>
+	<bean id="ieRmqPrefetch" class="org.springframework.beans.factory.config.MethodInvokingFactoryBean">
+		<property name="targetObject" ref="configurationService"/>
+		<property name="targetMethod" value="updateConfigurationMap"/>
+		<property name="arguments"><list><value>inference-engine.rabbitmq.prefetch</value><value>${oba.rmq.prefetch}</value></list></property>
 	</bean>
 
 	<!--  for debugging purposes, the TDS can be populated via a JSON file -->
