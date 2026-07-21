@@ -30,7 +30,7 @@ Base host: **`http://ec2-52-70-255-34.compute-1.amazonaws.com`** (Elastic IP `52
 
 - **Format:** standard **GTFS-realtime v2** protobuf (`google.transit.gtfs_realtime`). Fetch the binary body and decode with any gtfs-realtime bindings (e.g. `gtfs-realtime-bindings`). `?debug=true` is **not** available through the proxy (stripped).
 - **ID namespace:** **bare GTFS ids** — `route_id` like `M15`, `BxM1`, `SIM4C`; `stop_id` like `404856`; `trip_id` = bundle trip id. Two agencies: **MTA NYCT** (local, 5 boroughs) and **MTABC** (MTA Bus Company: express + former private lines).
-- **⚠️ trip_id parity (comparison gate — NOT yet verified):** emitted `trip_id`s are STIF-style, e.g. `MV_C6-Weekday-SDon-055700_M3_314`. Before joining against MTA's official feed / public GTFS, **confirm these `trip_id`s match**. If they don't, join on `(route_id, direction_id, vehicle_id, stop_id)` instead. `stop_id`/`route_id`/`vehicle_id` are expected to align.
+- **✅ trip_id parity (comparison gate — VERIFIED 100% vs public GTFS, 2026-07-21):** emitted `trip_id`s are STIF-style (e.g. `MV_C6-Weekday-SDon-055700_M3_314`) and **are the public-GTFS `trip_id`s** — a live-feed sample matched **2288/2288 `trip_id`, 235/235 `route_id`, 9974/9974 `stop_id`** in the C6 GTFS with **0 trip→route mismatches**. **Join the comparison on `(trip_id, stop_id)`.** (Verified against the public GTFS the bundle was built from; parity with MTA's *official real-time* feed is a separate harness step. Re-check after each pick with `local-loop/verify-parity.py`.)
 - **Coverage:** whole MTA bus network — ~100+ routes across `B*`, `BX*`, `M*`, `Q*`, `S*` plus express (`SIM*`, `BxM*`, `QM*`, `X*`). ~3,600 active vehicles off-peak, up to ~5,800 at weekday peak.
 - **Freshness:** predictions are computed off **~5 s** GPS (finer than MTA's published ~30 s). Under heavy load / restarts, predictions can lag real time. See the deadband (§4).
 - **Prediction weights:** **20 % schedule / 40 % historical / 40 % recent**. Historical + recent need Mongo **warm-up (days→weeks)**; until history accumulates the output is closer to schedule-dominant.
@@ -88,9 +88,9 @@ All app ports (8081/8082/8083, broker 5566/5567, predictions-time 5568, Mongo 27
 
 ## 6. Host layout & operations (all via SSM)
 
-Host `/opt/oba` (user `oba`): the two repo clones, wrapper scripts `run-{broker,inference,predictions,gtfsrt}.sh`, `set-weights.sh`, `deploy.sh`, `env-common.sh`.
+Host `/opt/oba` (user `oba`): the two repo clones, wrapper scripts `run-{broker,inference,predictions,gtfsrt}.sh`, `set-weights.sh`, `deploy.sh`, `monitor.sh`, `env-common.sh`. **A committed snapshot of all host config (scripts, units, nginx, bundle config) lives in [`local-loop/ec2/`](ec2/).**
 
-**systemd units** (Restart=always): `oba-broker` → `oba-inference` → `oba-predictions` → `oba-gtfsrt`, plus oneshot `oba-weights` (PartOf predictions). Mongo runs as the `oba-mongo` Docker container (`mongo:4.4`, WT cache 6 GB, bound 127.0.0.1). `nginx` is a system service.
+**systemd units** (Restart=always): `oba-broker` → `oba-inference` → `oba-predictions` → `oba-gtfsrt`, plus oneshot `oba-weights` (PartOf predictions) and **`oba-monitor.timer`** (every 2 min → CloudWatch, see §8). Mongo runs as the `oba-mongo` Docker container (`mongo:4.4`, WT cache 6 GB, bound 127.0.0.1). `nginx` is a system service.
 
 - **Deploy:** GitHub Action `.github/workflows/deploy.yml` (`workflow_dispatch`, modes `deploy` | `set-weights`) → OIDC role → `aws ssm send-command` runs `/opt/oba/deploy.sh`. `deploy.sh deploy <ref>` git-pulls both repos, rebuilds broker + vehicle-tracking(+webapp) + gtfsrt-webapp + predictions-webapp, restarts, smoke-checks.
 - **Tune weights:** `deploy.sh set-weights S H R` (validates sum=100, updates the SSM param, live-POSTs) — no restart.
@@ -109,23 +109,45 @@ Host `/opt/oba` (user `oba`): the two repo clones, wrapper scripts `run-{broker,
 
 ---
 
-## 8. Known limitations / caveats
+## 8. Monitoring & dashboard
 
-- **trip_id parity** with public GTFS is **unverified** (comparison gate — see §2).
+**CloudWatch dashboard:** https://console.aws.amazon.com/cloudwatch/home?region=us-east-1#dashboards/dashboard/oba-nyc-prod
+
+`/opt/oba/monitor.sh` runs every ~2 min (systemd `oba-monitor.timer`) and publishes custom metrics to CloudWatch namespace **`OBA/Prod`** (dimension `InstanceId`):
+
+| metric | meaning | alarm threshold |
+|---|---|---|
+| `ServicesDown` | # of {broker,inference,predictions,gtfsrt} + mongo + nginx not up | ≥ 1 (missing data → breaching) |
+| `FeedStalenessSeconds` | `now − GTFS-RT header.timestamp` (feed age) | > 120 |
+| `TripUpdateEntities` | entity count in `/tripUpdates` (feed populated) | < 100 |
+| `DataDiskUsedPct` | `/data` used % (Mongo growth) | > 85 |
+| `InferenceBacklogThreads` | inference queue backlog (divergence signal) | > 25000 |
+| `CPUUtilization` (AWS/EC2, built-in) | instance CPU | > 90% for 15 min |
+
+- **6 alarms** (name prefix `oba-`) are defined but currently have **no notification action** — they only drive red/green status on the dashboard. Wiring email/Slack is a one-liner later: create an SNS topic and `aws cloudwatch put-metric-alarm --alarm-actions <topic-arn>`.
+- Signals used (there is no built-in `/health`): GTFS-RT `header.timestamp` (= last successful 10 s refresh), `systemctl is-active`, the mongo container state, and the inference WARN "outstanding threads not reaped" line via `journalctl`.
+
+> **Live observation (2026-07-21):** the dashboard immediately showed the 5 s-while-moving deadband **diverging at PM peak** (~4,840 active vehicles: `InferenceBacklogThreads` climbing 23.7k→24.2k, load ~28/32). It fits off-peak (~3,600) but not at peak on 32 vCPU (see §9). Left as-is per decision; the dashboard tracks it.
+
+---
+
+## 9. Known limitations / caveats
+
+- **trip_id parity** with public GTFS is **verified 100%** (see §2); parity with MTA's *official real-time* feed remains a separate harness step.
 - **Single host = SPOF** (fine for an experiment).
 - **HTTP only** (no TLS) and **publicly readable**.
 - **On-demand pricing** (~$1,042/mo; no commitment).
 - **Warm-up:** historical/recent weights need days–weeks of Mongo data before they meaningfully help.
 - **Mongo disk growth:** `LinkTravelTimes` archives every observation → `/data` will fill over time (no TTL yet).
-- **Peak headroom:** the deadband config was measured at ~3,600 vehicles; at ~5,000+ peak the 32-vCPU box gets tighter (widen the deadband if needed).
-- **Host config not in git:** the `run-*.sh` wrappers, systemd units, and nginx config live only on the host (lost if the instance is destroyed).
+- **Peak headroom (confirmed):** the current 5 s-while-moving deadband **diverges at PM peak** (~4,840 vehicles → inference backlog climbs, load ~28/32); it holds off-peak (~3,600). Fix by widening the deadband (`minIntervalSec`→7-10 / `minMeters`→15-20 in `run-inference.sh` + restart) or resizing to c7i.12xlarge. Tracked on the §8 dashboard.
+- **Host config** is **now committed** to [`local-loop/ec2/`](ec2/) (scripts, systemd units, nginx, bundle config; secrets excluded) — no longer host-only.
 - **GitHub Action:** `workflow_dispatch` only becomes runnable once `deploy.yml` is on the repo **default branch**.
 
 See §9 of the memory note (`obanyc-ec2-production-deployment`) for the current live tuning values and command recipes.
 
 ---
 
-## 9. Cost snapshot (us-east-1, on-demand, 730 h/mo)
+## 10. Cost snapshot (us-east-1, on-demand, 730 h/mo)
 
 | Item | ~$/mo |
 |---|---|
@@ -139,16 +161,17 @@ The ingestion deadband is what makes a single small box viable; without it, full
 
 ---
 
-## 10. Follow-ups
+## 11. Follow-ups
 
 **Independent of the TLS / IP-lockdown / RI decisions — these matter regardless:**
-- **Verify trip_id parity** (blocks a clean comparison join).
+- ✅ **Verify trip_id parity** — done (100% vs public GTFS; `local-loop/verify-parity.py`, §2).
+- ✅ **Basic monitoring** — done (CloudWatch `OBA/Prod` metrics + `oba-nyc-prod` dashboard + alarms; §8).
+- ✅ **Commit the host config** — done ([`local-loop/ec2/`](ec2/)).
 - **Build the comparison/scoring harness + ground truth** (PRODUCTIONIZING §5).
-- **Monitoring/alerting:** feed staleness, `/data` disk usage, JVM/GC, instance health, peak-hour deadband headroom.
 - **Mongo growth:** add a TTL index / archival on `LinkTravelTimes` before `/data` fills.
 - **Bundle-refresh pipeline** for the next pick (~quarterly STIF).
 - **Put `deploy.yml` on the default branch** so the GitHub Action is dispatchable.
-- **Commit the host config** (`run-*.sh`, systemd units, nginx conf) into the repo for reproducibility.
+- **Alerting (optional):** wire the §8 alarms to an SNS topic → email/Slack if you want push notifications.
 - Let Mongo **warm up** before trusting historical/recent weighting.
 
 **If we DON'T add TLS (stay HTTP):**
