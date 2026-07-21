@@ -1,0 +1,162 @@
+# OBA-NYC whole-MTA GTFS-RT — EC2 production deployment
+
+Live deployment of the inference → predictions loop (see `RUNBOOK.md` for the local POC and
+`PRODUCTIONIZING.md` for the original scoping) on a single EC2 host, serving **GTFS-RT arrival
+predictions for the entire MTA bus network**. The purpose is an **A/B test**: our predictions run on
+the same codebase and the same raw-GPS AVL source (the ~5 s BusTech feed) that MTA's own
+production OBA-NYC uses, so we can compare our arrival predictions against MTA's official GTFS-RT.
+
+Stood up 2026-07-21. **Experimental, best-effort, single host — not an official feed.**
+
+---
+
+## 1. Public endpoints (URLs)
+
+Base host: **`http://ec2-52-70-255-34.compute-1.amazonaws.com`** (Elastic IP `52.70.255.34`, us-east-1). HTTP only — **no TLS yet**.
+
+| URL | Content |
+|---|---|
+| `…/tripUpdates` | GTFS-RT **TripUpdates** — arrival/departure predictions (the feed for the comparison). ~1.4 MB protobuf. |
+| `…/vehiclePositions` | GTFS-RT **VehiclePositions** — inferred bus positions (useful for ground truth/debugging). ~270 KB. |
+| `…/alerts` | GTFS-RT Alerts — **empty** (we don't ingest service alerts). |
+
+- **GET/HEAD only.** POST and every other path return 403/404 (see §7). Rate-limited to ~10 req/s per IP.
+- **Refresh cadence:** the feed is cached and rebuilt every **~10 s**; poll at ~15–30 s.
+- The hostname is stable (derived from the Elastic IP, which survives stop/start/resize).
+
+---
+
+## 2. What a consumer should know
+
+- **Format:** standard **GTFS-realtime v2** protobuf (`google.transit.gtfs_realtime`). Fetch the binary body and decode with any gtfs-realtime bindings (e.g. `gtfs-realtime-bindings`). `?debug=true` is **not** available through the proxy (stripped).
+- **ID namespace:** **bare GTFS ids** — `route_id` like `M15`, `BxM1`, `SIM4C`; `stop_id` like `404856`; `trip_id` = bundle trip id. Two agencies: **MTA NYCT** (local, 5 boroughs) and **MTABC** (MTA Bus Company: express + former private lines).
+- **⚠️ trip_id parity (comparison gate — NOT yet verified):** emitted `trip_id`s are STIF-style, e.g. `MV_C6-Weekday-SDon-055700_M3_314`. Before joining against MTA's official feed / public GTFS, **confirm these `trip_id`s match**. If they don't, join on `(route_id, direction_id, vehicle_id, stop_id)` instead. `stop_id`/`route_id`/`vehicle_id` are expected to align.
+- **Coverage:** whole MTA bus network — ~100+ routes across `B*`, `BX*`, `M*`, `Q*`, `S*` plus express (`SIM*`, `BxM*`, `QM*`, `X*`). ~3,600 active vehicles off-peak, up to ~5,800 at weekday peak.
+- **Freshness:** predictions are computed off **~5 s** GPS (finer than MTA's published ~30 s). Under heavy load / restarts, predictions can lag real time. See the deadband (§4).
+- **Prediction weights:** **20 % schedule / 40 % historical / 40 % recent**. Historical + recent need Mongo **warm-up (days→weeks)**; until history accumulates the output is closer to schedule-dominant.
+- **Schedule pick:** built from the **C6** pick (effective ~2026-06-28). Must be refreshed each pick (~quarterly) or trips go stale.
+
+---
+
+## 3. Architecture (topology)
+
+```
+BusTech RabbitMQ (whole-MTA AVL, ~5 s/vehicle, amqps)
+  │  RabbitMqInputQueueListenerTask (in-process AMQP; creds from SSM; acceptAllVehicles=true)
+  │  + ingestion DEADBAND (drop redundant near-stationary fixes — see §4)
+  ▼
+INFERENCE  vehicle-tracking-webapp :8081   (particle filter, one per vehicle — the CPU-heavy stage)
+  │  PUB inferred locations ─connect→ SimpleBroker (SUB bind :5566 / PUB bind :5567)
+  │                                          fan-out :5567 ─┬─► PREDICTIONS   :8082
+  │                                                         └─► GTFS-RT app   :8083
+PREDICTIONS predictions-webapp :8082  → writes observed link times to Mongo (LinkTravelTimes, AggregateLinkTimes)
+  │  PUB GTFS-RT "time" (bind :5568) ─┬─► inference loop-back consumer (feeds predictions into the TDS)
+  │                                   └─► GTFS-RT app timeInputQueue
+GTFS-RT app gtfsrt-webapp :8083  (builds TripUpdates/VehiclePositions from the TDS, cached ~10 s)
+  ▼
+nginx :80  (GET-only allowlist reverse proxy) ──► public internet
+```
+
+All app ports (8081/8082/8083, broker 5566/5567, predictions-time 5568, Mongo 27017) are **localhost/VPC-internal**. The **only** inbound is `:80` → nginx.
+
+---
+
+## 4. Key architectural decisions (and why)
+
+1. **Keep ZeroMQ + the queue-broker internally; RabbitMQ only at ingestion.** The one RabbitMQ touchpoint is `RabbitMqInputQueueListenerTask` (in-process AMQP, no Python bridge). Everything downstream is standard OBA-NYC ZeroMQ → minimal new code.
+2. **`SimpleBroker` fan-out.** Inference's inferred-location stream must reach **both** predictions and the gtfsrt-webapp, so the broker (SUB :5566 / PUB :5567) fans it out; predictions + gtfsrt both SUB-connect to :5567.
+3. **20/40/40 weights via runtime API, not code.** The shipped predictions webapp uses a Dummy config (defaults 100/0/0). A health-gated `oba-weights` unit reads SSM `/oba/predictions/weights` and `POST /api/weight`s it after predictions is up; re-applied on every restart (the override resets on restart). Tunable via the GitHub Action `set-weights` mode.
+4. **Whole-MTA single bundle.** One transit-data bundle covering 5 NYCT borough GTFS + `GTFS_MTABC` (agency `MTABC`), with NYCT STIF (no MTABC STIF was provided — MTABC still matches from its GTFS). Built with `FederatedTransitDataBundleCreatorMain`; lives in `/data/oba-bundle/2026C6_wholeMTA` (~675 MB).
+5. **Single host, compute-optimized.** The workload is **CPU-bound** (particle filter), not memory-bound → c-family (c7i) not r-family. Currently **c7i.8xlarge** (32 vCPU).
+6. **Ingestion deadband to fit whole-network 5 s on one box.** `InputServiceImpl.passesDeadband` (default off; enabled via `-Doba.deadband.*`) processes a fix only if the bus **moved ≥ `minMeters`** since the last kept fix, with a `minIntervalSec` rate cap + `maxAgeSec` staleness failsafe. This drops redundant near-stationary pings while keeping the fine cadence when moving. **Current: `minMeters=10, minIntervalSec=5, maxAgeSec=30`** ("5 s while moving, ~30 s while stopped") → load ~20–24 on 32 vCPU, converged. This avoided needing a partitioned multi-box fleet.
+7. **SSM-only admin, no SSH.** Security group has no port 22; all admin via AWS SSM (Session Manager / Send-Command). Secrets in SSM Parameter Store. Nothing tied to a changing source IP.
+8. **nginx GET-only allowlist in front.** The gtfsrt-webapp also exposes injection POSTs (`/input/*`) and Hessian remoting (`/transit-data-service`, `/configuration-service`) on :8083. nginx forwards **only** GET/HEAD on the 3 read feeds and 404s the rest, so those stay unreachable from the internet.
+9. **Deploy via GitHub Action → SSM (no inbound SSH).** OIDC-assumed IAM role runs `/opt/oba/deploy.sh` over SSM.
+
+---
+
+## 5. Infrastructure inventory (AWS acct 032610139471, us-east-1)
+
+- **EC2:** `i-0386b6bb8338b2f67` (`oba-nyc-prod`, **c7i.8xlarge** 32 vCPU/64 GB, Amazon Linux 2023). **EIP 52.70.255.34.** 30 GB gp3 root + **500 GB gp3** data volume at `/data` (Mongo + bundle; `DeleteOnTermination=false`).
+- **Security group** `sg-0fca012b2afe2a1ee`: inbound **:80 from 0.0.0.0/0** only. Everything else closed.
+- **IAM:** instance profile `oba-nyc-ec2-profile` / role `oba-nyc-ec2-role` (SSM core + read `/oba/*` + write `/oba/predictions/weights` + read the S3 bundle bucket). Deploy role `oba-nyc-gha-deploy` (GitHub OIDC → `ssm:SendCommand` on this instance).
+- **SSM Parameter Store:** `/oba/rabbitmq/*` (feed creds — SecureString user/pass), `/oba/predictions/weights` = `20/40/40`.
+- **S3:** `oba-nyc-bundles-032610139471` (bundle transfer: `2026Jun_Manhattan_C6/`, `wholeMTA-C6-src/`).
+- **Repos** (push to `nymta` only): `nymta/onebusaway-nyc` @ `rsen/ec2-productionize-gtfs-rt`; `nymta/onebusaway-nyc-predictions` @ `rsen/local-gps-predictions`. Cloned on the host under `/opt/oba` via per-repo read-only deploy keys.
+
+---
+
+## 6. Host layout & operations (all via SSM)
+
+Host `/opt/oba` (user `oba`): the two repo clones, wrapper scripts `run-{broker,inference,predictions,gtfsrt}.sh`, `set-weights.sh`, `deploy.sh`, `env-common.sh`.
+
+**systemd units** (Restart=always): `oba-broker` → `oba-inference` → `oba-predictions` → `oba-gtfsrt`, plus oneshot `oba-weights` (PartOf predictions). Mongo runs as the `oba-mongo` Docker container (`mongo:4.4`, WT cache 6 GB, bound 127.0.0.1). `nginx` is a system service.
+
+- **Deploy:** GitHub Action `.github/workflows/deploy.yml` (`workflow_dispatch`, modes `deploy` | `set-weights`) → OIDC role → `aws ssm send-command` runs `/opt/oba/deploy.sh`. `deploy.sh deploy <ref>` git-pulls both repos, rebuilds broker + vehicle-tracking(+webapp) + gtfsrt-webapp + predictions-webapp, restarts, smoke-checks.
+- **Tune weights:** `deploy.sh set-weights S H R` (validates sum=100, updates the SSM param, live-POSTs) — no restart.
+- **Tune the deadband:** edit `-Doba.deadband.*` in `/opt/oba/run-inference.sh`, `systemctl restart oba-inference` (no rebuild). Widen `minMeters`→15 or `minIntervalSec`→7 to shed load; lower for finer cadence.
+- **Resize instance:** stop → `modify-instance-attribute --instance-type` → start (EBS + EIP persist). **Re-tune JVM heaps** in the `run-*.sh` for the new RAM.
+- **Refresh the bundle** (new pick): upload GTFS+STIF → S3, pull to `/data/bundle-src`, author `bundle-*.xml`, build with `FederatedTransitDataBundleCreatorMain`, move the new bundle into `/data/oba-bundle`, archive the old one, restart.
+- **Interactive admin:** `aws ssm start-session --target i-0386b6bb8338b2f67` (needs the session-manager-plugin locally) or scripted `aws ssm send-command`.
+
+---
+
+## 7. Security posture
+
+- Only `:80` is internet-facing → nginx. nginx (`/etc/nginx/conf.d/oba-gtfsrt.conf`) proxies **only** `GET`/`HEAD` on `/tripUpdates`, `/vehiclePositions`, `/alerts` with **hardcoded backend paths** (client query string dropped → neutralizes `?debug=` text dumps and `?time=` cache-bypass DoS), rate-limited 10 r/s/IP. Everything else → 404; non-GET → 403.
+- The app's sensitive endpoints (`POST /input/*` injection, Hessian `/transit-data-service` + `/configuration-service`) are **live on :8083 but unreachable** — the SG never opens 8083 and nginx never forwards to them.
+- No inbound SSH. Admin only via SSM (IAM-authenticated). Secrets in SSM Parameter Store, never in git.
+
+---
+
+## 8. Known limitations / caveats
+
+- **trip_id parity** with public GTFS is **unverified** (comparison gate — see §2).
+- **Single host = SPOF** (fine for an experiment).
+- **HTTP only** (no TLS) and **publicly readable**.
+- **On-demand pricing** (~$1,042/mo; no commitment).
+- **Warm-up:** historical/recent weights need days–weeks of Mongo data before they meaningfully help.
+- **Mongo disk growth:** `LinkTravelTimes` archives every observation → `/data` will fill over time (no TTL yet).
+- **Peak headroom:** the deadband config was measured at ~3,600 vehicles; at ~5,000+ peak the 32-vCPU box gets tighter (widen the deadband if needed).
+- **Host config not in git:** the `run-*.sh` wrappers, systemd units, and nginx config live only on the host (lost if the instance is destroyed).
+- **GitHub Action:** `workflow_dispatch` only becomes runnable once `deploy.yml` is on the repo **default branch**.
+
+See §9 of the memory note (`obanyc-ec2-production-deployment`) for the current live tuning values and command recipes.
+
+---
+
+## 9. Cost snapshot (us-east-1, on-demand, 730 h/mo)
+
+| Item | ~$/mo |
+|---|---|
+| c7i.8xlarge (32 vCPU) — current | ~$1,042 |
+| 500 GB gp3 + EIP | ~$44 |
+| **Total (current, on-demand)** | **~$1,086** |
+| 1-yr RI on the instance instead | ~$690 + $44 = **~$734** |
+| Downsize to c7i.4xlarge (needs the 10 s-while-moving deadband) | ~$521 + $44 |
+
+The ingestion deadband is what makes a single small box viable; without it, full-5 s whole-network needs ~48–64 vCPU (~$1,560–2,085/mo) or a partitioned Spot/Graviton fleet.
+
+---
+
+## 10. Follow-ups
+
+**Independent of the TLS / IP-lockdown / RI decisions — these matter regardless:**
+- **Verify trip_id parity** (blocks a clean comparison join).
+- **Build the comparison/scoring harness + ground truth** (PRODUCTIONIZING §5).
+- **Monitoring/alerting:** feed staleness, `/data` disk usage, JVM/GC, instance health, peak-hour deadband headroom.
+- **Mongo growth:** add a TTL index / archival on `LinkTravelTimes` before `/data` fills.
+- **Bundle-refresh pipeline** for the next pick (~quarterly STIF).
+- **Put `deploy.yml` on the default branch** so the GitHub Action is dispatchable.
+- **Commit the host config** (`run-*.sh`, systemd units, nginx conf) into the repo for reproducibility.
+- Let Mongo **warm up** before trusting historical/recent weighting.
+
+**If we DON'T add TLS (stay HTTP):**
+- Fine for a server-side poller (our harness). Data is public, so confidentiality isn't the issue; the gap is integrity/authenticity — a network MITM could tamper with the feed (low likelihood, but it would corrupt an accuracy comparison). Browser/webapp consumers hit mixed-content blocking. **Follow-up:** none required for a curl-based harness; keep the easy TLS path in reserve (Caddy + a free `sslip.io` hostname → auto Let's Encrypt, or a domain you own → EIP).
+
+**If we DON'T lock down source IPs (stay world-open):**
+- **Egress/bandwidth:** `/tripUpdates` is ~1.4 MB; each poll = ~1.4 MB out. Our own harness (~2–4 polls/min) ≈ 250–500 GB/mo ≈ ~$15–40/mo. If the URL is discovered and widely polled, egress can balloon (per-IP rate-limit caps a single client, not the total). **Follow-up:** watch `/var/log/nginx/access.log` + CloudWatch egress; be ready to restrict `:80` to the harness CIDR (one SG command) if abused.
+- **Patching:** nginx + the OS are now internet-facing. **Follow-up:** enable automatic security updates (`dnf-automatic`) / patch periodically. (The app's dangerous endpoints are shielded, but nginx itself is the exposed surface.)
+
+**If we DON'T buy a Reserved Instance (stay on-demand):**
+- Paying ~$350/mo more than a 1-yr RI (~$1,042 vs ~$690) for full flexibility (resize/stop anytime, no commitment). **Follow-up:** if this runs beyond ~3–4 months, an RI (or a more flexible Compute Savings Plan) pays back — revisit. Alternatively **stop the instance** when not actively collecting (halts compute cost; EBS/EIP persist ~$44/mo) — but that pauses Mongo warm-up and takes the public feed down.
