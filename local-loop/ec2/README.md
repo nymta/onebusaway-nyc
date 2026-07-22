@@ -32,7 +32,7 @@ live only in `~oba/.ssh` on the host and are deliberately excluded.
 5. `systemctl daemon-reload && systemctl enable --now oba-broker oba-inference oba-predictions oba-gtfsrt oba-monitor.timer nginx`.
 
 ## Current tuning captured (this commit)
-- inference `-Xmx30g` + ingestion deadband `minMeters=10 / minIntervalSec=5 / maxAgeSec=30` ("5 s-while-moving") — `run-inference.sh`
+- inference `-Xmx30g` + ingestion deadband `minMeters=10 / minIntervalSec=7 / maxAgeSec=30` ("7 s-while-moving"; widened from 5 s on 2026-07-22) + stale-fix load-shedding `oba.shed.maxAgeSec=50` — `run-inference.sh`
 - predictions `-Xmx10g`, gtfsrt `-Xmx6g`, Mongo WT cache 6 GB
 - prediction weights `20/40/40` (SSM `/oba/predictions/weights`)
-- **Caveat:** the 5 s-while-moving deadband **diverges at PM peak (~4,800+ vehicles) on 32 vCPU** — widen `minIntervalSec`/`minMeters` in `run-inference.sh` (+ `systemctl restart oba-inference`) or resize up. Tracked by the `oba-nyc-prod` CloudWatch dashboard.
+- **Caveat:** at AM/PM rush (~4,800+ vehicles) 32 vCPU can't hold true 5 s — hence the 7 s deadband + `oba.shed.maxAgeSec=50` load-shedding backstop (bounds lag, no OOM). Tune `minIntervalSec` / `shed.maxAgeSec` in `run-inference.sh` (+ `systemctl restart oba-inference`) or resize up. Tracked by the `oba-nyc-prod` CloudWatch dashboard.
