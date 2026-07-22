@@ -17,8 +17,11 @@
 package org.onebusaway.nyc.vehicle_tracking.impl.queue;
 
 import java.util.ArrayList;
+import java.util.concurrent.ConcurrentHashMap;
 
 import javax.annotation.PostConstruct;
+
+import org.joda.time.format.ISODateTimeFormat;
 
 import org.apache.commons.lang.StringUtils;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -50,6 +53,13 @@ public abstract class InputServiceImpl {
 	private ConfigurationService _configurationService;
 	private ObjectMapper _mapper;
 
+	// Optional per-vehicle ingestion deadband (see passesDeadband). Default OFF -> prod unchanged.
+	private final ConcurrentHashMap<String, long[]> _deadbandLastKept = new ConcurrentHashMap<String, long[]>();
+	private boolean _deadbandEnabled = false;
+	private double _deadbandMinMeters = 25.0;
+	private long _deadbandMinIntervalMs = 10000L;
+	private long _deadbandMaxAgeMs = 30000L;
+
 	@Autowired
 	public void setVehicleAssignmentService(
 			VehicleAssignmentService vehicleAssignmentService) {
@@ -73,6 +83,18 @@ public abstract class InputServiceImpl {
 		_mapper = new ObjectMapper();
 		final AnnotationIntrospector jaxb = new JaxbAnnotationIntrospector();
 		_mapper.setAnnotationIntrospector(jaxb);
+		try {
+			_deadbandEnabled = Boolean.getBoolean("oba.deadband.enabled");
+			_deadbandMinMeters = Double.parseDouble(System.getProperty("oba.deadband.minMeters", "25"));
+			_deadbandMinIntervalMs = 1000L * Long.parseLong(System.getProperty("oba.deadband.minIntervalSec", "10"));
+			_deadbandMaxAgeMs = 1000L * Long.parseLong(System.getProperty("oba.deadband.maxAgeSec", "30"));
+		} catch (Exception e) {
+			_log.warn("deadband config parse error; using defaults", e);
+		}
+		if (_deadbandEnabled)
+			_log.info("ingestion deadband ENABLED: minMeters=" + _deadbandMinMeters
+					+ " minIntervalSec=" + (_deadbandMinIntervalMs / 1000)
+					+ " maxAgeSec=" + (_deadbandMaxAgeMs / 1000));
 	}
 
 	public boolean processMessage(String address, byte[] buff) throws Exception {
@@ -123,7 +145,7 @@ public abstract class InputServiceImpl {
 		if (_configurationService != null
 				&& Boolean.parseBoolean(_configurationService.getConfigurationValueAsString(
 						"inference-engine.acceptAllVehicles", "false")))
-			return true;
+			return passesDeadband(envelope);
 
 		final CcLocationReport message = envelope.getCcLocationReport();
 		final ArrayList<AgencyAndId> vehicleList = new ArrayList<AgencyAndId>();
@@ -147,9 +169,63 @@ public abstract class InputServiceImpl {
 				vehicleIdent.getAgencydesignator(), vehicleIdent.getVehicleId()
 						+ "");
 
-		return vehicleList.contains(vehicleId);
+		return vehicleList.contains(vehicleId) && passesDeadband(envelope);
 	}
-	
+
+	/**
+	 * Optional per-vehicle "send-on-delta" deadband: process a fix only if the vehicle moved
+	 * >= minMeters since the last processed fix, subject to a minInterval rate cap and a maxAge
+	 * staleness failsafe. Cuts particle-filter load by dropping redundant near-stationary pings
+	 * while keeping the finer (5s) cadence when the bus is actually moving. Default OFF (returns
+	 * true) so production behavior is unchanged; tune via -Doba.deadband.{enabled,minMeters,
+	 * minIntervalSec,maxAgeSec}. Distance measured off the last KEPT fix so slow creep accumulates.
+	 */
+	protected boolean passesDeadband(RealtimeEnvelope envelope) {
+		if (!_deadbandEnabled)
+			return true;
+		final CcLocationReport m = envelope.getCcLocationReport();
+		final String key;
+		final long now;
+		final int lat, lon;
+		try {
+			key = m.getVehicle().getAgencydesignator() + "_" + m.getVehicle().getVehicleId();
+			now = ISODateTimeFormat.dateTimeParser().parseDateTime(m.getTimeReported()).getMillis();
+			lat = m.getLatitude();
+			lon = m.getLongitude();
+		} catch (Exception e) {
+			return true; // malformed -> don't drop here; let the normal pipeline handle it
+		}
+		final long[] last = _deadbandLastKept.get(key);
+		boolean keep;
+		if (last == null) {
+			keep = true;
+		} else {
+			final long age = now - last[2];
+			if (age < 0L)
+				keep = true; // out-of-order / clock reset
+			else if (age < _deadbandMinIntervalMs)
+				keep = false; // rate cap (bounds peak load even for fast movers)
+			else if (age >= _deadbandMaxAgeMs)
+				keep = true; // staleness failsafe (keep a stopped bus alive)
+			else
+				keep = distMeters((int) last[0], (int) last[1], lat, lon) >= _deadbandMinMeters;
+		}
+		if (keep)
+			_deadbandLastKept.put(key, new long[] { lat, lon, now });
+		return keep;
+	}
+
+	/** Great-circle distance in metres between two microdegree lat/lon points (haversine). */
+	private static double distMeters(int latMicro1, int lonMicro1, int latMicro2, int lonMicro2) {
+		final double lat1 = latMicro1 / 1e6, lon1 = lonMicro1 / 1e6;
+		final double lat2 = latMicro2 / 1e6, lon2 = lonMicro2 / 1e6;
+		final double dLat = Math.toRadians(lat2 - lat1), dLon = Math.toRadians(lon2 - lon1);
+		final double a = Math.sin(dLat / 2) * Math.sin(dLat / 2)
+				+ Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2))
+				* Math.sin(dLon / 2) * Math.sin(dLon / 2);
+		return 6371000.0 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+	}
+
 	public String getDepotPartitionKey() {
 		final StringBuilder sb = new StringBuilder();
 		for (final String key : _depotPartitionKeys) {

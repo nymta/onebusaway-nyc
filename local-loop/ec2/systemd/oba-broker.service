@@ -1,0 +1,12 @@
+[Unit]
+Description=OBA-NYC SimpleBroker (ZeroMQ fan-out 5566->5567)
+After=network-online.target
+Wants=network-online.target
+[Service]
+User=oba
+ExecStart=/opt/oba/run-broker.sh
+Restart=always
+RestartSec=5
+LimitNOFILE=65536
+[Install]
+WantedBy=multi-user.target

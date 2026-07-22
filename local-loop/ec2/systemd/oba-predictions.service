@@ -1,0 +1,13 @@
+[Unit]
+Description=OBA-NYC predictions (predictions-webapp :8082, Mongo history)
+After=network-online.target oba-broker.service docker.service
+Wants=network-online.target oba-weights.service
+Requires=oba-broker.service
+[Service]
+User=oba
+ExecStart=/opt/oba/run-predictions.sh
+Restart=always
+RestartSec=15
+LimitNOFILE=65536
+[Install]
+WantedBy=multi-user.target

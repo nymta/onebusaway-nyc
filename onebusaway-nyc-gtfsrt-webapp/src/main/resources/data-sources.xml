@@ -17,18 +17,13 @@
     <!-- this file comes from onebusaway-nyc-gtfsrt-webapp -->
     <!-- Database Configuration -->
 
-    <bean id="dataSource"
-          class="org.springframework.jndi.JndiObjectFactoryBean">
-      <property name="jndiName"
-                value="java:comp/env/jdbc/appDB"/>
-      <property name="lookupOnStartup"
-                value="true"/>
-      <property name="cache"
-                value="true"/>
-      <property name="proxyInterface"
-                value="javax.sql.DataSource"/>
-      <property name="resourceRef"
-                value="true" />
+    <!-- production (EC2 single-host): embedded file-based HSQLDB satisfies the jdbc/appDB dependency without a
+         JNDI container binding; Hibernate auto-creates the users schema (mirrors the integration-test datasource). -->
+    <bean id="dataSource" class="org.springframework.jdbc.datasource.DriverManagerDataSource">
+        <property name="driverClassName" value="org.hsqldb.jdbcDriver" />
+        <property name="url" value="jdbc:hsqldb:file:/data/oba/gtfsrt-appdb/db;shutdown=true;hsqldb.write_delay=false" />
+        <property name="username" value="sa" />
+        <property name="password" value="" />
     </bean>
 
     <alias name="dataSource" alias="mutableDataSource" />
@@ -55,17 +50,58 @@
         <property name="standaloneMode" value="${bundle.mode.standalone}" />
     </bean>
 
+    <!-- production (EC2 single-host): seed the TDS queue endpoints so inferenceInputQueue SUB-connects to the
+         SimpleBroker fan-out (localhost:5567 / inference_queue) and timeInputQueue SUB-connects to the predictions
+         GTFS-RT publisher (localhost:5568 / time). No TDM; literal values for this single-host deploy. -->
+    <bean id="tdsInQHost" class="org.springframework.beans.factory.config.MethodInvokingFactoryBean">
+        <property name="targetObject" ref="configurationService"/>
+        <property name="targetMethod" value="updateConfigurationMap"/>
+        <property name="arguments"><list><value>tds.inputQueueHost</value><value>localhost</value></list></property>
+    </bean>
+    <bean id="tdsInQPort" class="org.springframework.beans.factory.config.MethodInvokingFactoryBean">
+        <property name="targetObject" ref="configurationService"/>
+        <property name="targetMethod" value="updateConfigurationMap"/>
+        <property name="arguments"><list><value>tds.inputQueuePort</value><value>5567</value></list></property>
+    </bean>
+    <bean id="tdsInQName" class="org.springframework.beans.factory.config.MethodInvokingFactoryBean">
+        <property name="targetObject" ref="configurationService"/>
+        <property name="targetMethod" value="updateConfigurationMap"/>
+        <property name="arguments"><list><value>tds.inputQueueName</value><value>inference_queue</value></list></property>
+    </bean>
+    <bean id="tdsTimeQHost" class="org.springframework.beans.factory.config.MethodInvokingFactoryBean">
+        <property name="targetObject" ref="configurationService"/>
+        <property name="targetMethod" value="updateConfigurationMap"/>
+        <property name="arguments"><list><value>tds.timePredictionQueueHost</value><value>localhost</value></list></property>
+    </bean>
+    <bean id="tdsTimeQPort" class="org.springframework.beans.factory.config.MethodInvokingFactoryBean">
+        <property name="targetObject" ref="configurationService"/>
+        <property name="targetMethod" value="updateConfigurationMap"/>
+        <property name="arguments"><list><value>tds.timePredictionQueueOutputPort</value><value>5568</value></list></property>
+    </bean>
+    <bean id="tdsTimeQName" class="org.springframework.beans.factory.config.MethodInvokingFactoryBean">
+        <property name="targetObject" ref="configurationService"/>
+        <property name="targetMethod" value="updateConfigurationMap"/>
+        <property name="arguments"><list><value>tds.timePredictionQueueName</value><value>time</value></list></property>
+    </bean>
+    <bean id="tdsUseTimePredictions" class="org.springframework.beans.factory.config.MethodInvokingFactoryBean">
+        <property name="targetObject" ref="configurationService"/>
+        <property name="targetMethod" value="updateConfigurationMap"/>
+        <property name="arguments"><list><value>display.useTimePredictions</value><value>true</value></list></property>
+    </bean>
+
     <!-- Input Queue Configuration -->
     <bean id="inferenceInputQueue"
           class="org.onebusaway.nyc.transit_data_federation.impl.queue.InferenceInputQueueListenerTask"
             destroy-method="destroy"
+            depends-on="tdsInQHost,tdsInQPort,tdsInQName"
     />
 
     <!--  Time Queue Configuration -->
     <!--  This option integrates with an external time prediction queue -->
     <bean id="timeInputQueue"
             class="org.onebusaway.nyc.transit_data_federation.impl.predictions.QueuePredictionIntegrationServiceImpl"
-            destroy-method="destroy">
+            destroy-method="destroy"
+            depends-on="tdsTimeQHost,tdsTimeQPort,tdsTimeQName,tdsUseTimePredictions">
         <property name="checkPredictionAge" value="false"/>
     </bean>
     
