@@ -1,0 +1,52 @@
+=== A. same-route / different-trip (196 pairs of 7659 total) ===
+start-time gap |ours−MTA| (min): median 10.0  mean 16.5  max 157 ; same-start(<1min)=3 ; ≤10min=104 ; >20min=38
+our trip exists in MTA feed on a DIFFERENT vehicle: 137/196
+  8088 Q4: ours 103100_MISC_865(17:11) vs MTA 102600_MISC_824(17:06) gap=5 min; our-trip-on-other-veh=7771
+  5281 M103: ours 094500_M101_133(15:45) vs MTA 097100_M101_140(16:11) gap=-26 min; our-trip-on-other-veh=5845
+  7124 B45: ours 103200_B65_866(17:12) vs MTA 102000_B45_816(17:00) gap=12 min; our-trip-on-other-veh=7119
+  2677 SIM1C: ours 093500_SIM10_592(15:35) vs MTA 095000_MISC_725(15:50) gap=-15 min; our-trip-on-other-veh=2626
+  7053 S96: ours 103100_S4696_50(17:11) vs MTA 103000_S4696_53(17:10) gap=1 min; our-trip-on-other-veh=None
+  5837 M103: ours 096200_M101_65(16:02) vs MTA 097400_M101_116(16:14) gap=-12 min; our-trip-on-other-veh=None
+  8230 S98: ours 099100_MISC_357(16:31) vs MTA 099000_MISC_383(16:30) gap=1 min; our-trip-on-other-veh=7059
+  2480 X27: ours 099900_X2838_816(16:39) vs MTA 097000_X2737_713(16:10) gap=29 min; our-trip-on-other-veh=2414
+  5296 BX35: ours 097300_BX35_873(16:13) vs MTA 098000_BX35_861(16:20) gap=-7 min; our-trip-on-other-veh=None
+  8541 Q83: ours 100200_MISC_304(16:42) vs MTA 100600_MISC_199(16:46) gap=-4 min; our-trip-on-other-veh=8003
+  6113 M103: ours 094500_M101_133(15:45) vs MTA 092100_M101_70(15:21) gap=24 min; our-trip-on-other-veh=5845
+  7529 Q77: ours 098700_MISC_819(16:27) vs MTA 097700_MISC_795(16:17) gap=10 min; our-trip-on-other-veh=8877
+  9522 B83: ours 098600_B83_322(16:26) vs MTA 091600_B83_319(15:16) gap=70 min; our-trip-on-other-veh=7793
+  5305 M103: ours 094500_M101_133(15:45) vs MTA 101600_M101_98(16:56) gap=-71 min; our-trip-on-other-veh=5845
+  7513 Q54: ours 100700_Q54_925(16:47) vs MTA 099500_Q54_942(16:35) gap=12 min; our-trip-on-other-veh=7851
+
+=== B. direction flips (25) ===
+  9592 M98: ours 095000_M98_905(15:50) vs MTA 102000_M98_905(17:00) gap=-70 min; our-trip-on-other-veh=None
+  6299 BX40: ours 094400_BX402_36(15:44) vs MTA 104200_BX402_36(17:22) gap=-98 min; our-trip-on-other-veh=None
+  9435 M106: ours 099000_M96_837(16:30) vs MTA 103100_M96_837(17:11) gap=-41 min; our-trip-on-other-veh=None
+  6201 M35: ours 101800_M35_310(16:58) vs MTA 103100_M35_310(17:11) gap=-13 min; our-trip-on-other-veh=None
+  6150 M14D+: ours 099800_SBS14_748(16:38) vs MTA 103200_SBS14_738(17:12) gap=-34 min; our-trip-on-other-veh=4969
+  1250 BX2: ours 095500_BX2_214(15:55) vs MTA 104800_BX2_214(17:28) gap=-93 min; our-trip-on-other-veh=None
+  9592 M98: ours 095000_M98_905(15:50) vs MTA 102000_M98_905(17:00) gap=-70 min; our-trip-on-other-veh=None
+  5943 BX42: ours 102900_BX402_44(17:09) vs MTA 095100_BX402_42(15:51) gap=78 min; our-trip-on-other-veh=6290
+  5349 BX9: ours 095400_BX9_643(15:54) vs MTA 103500_BX9_650(17:15) gap=-81 min; our-trip-on-other-veh=None
+  7670 B82+: ours 103400_SBS82_911(17:14) vs MTA 096900_SBS82_932(16:09) gap=65 min; our-trip-on-other-veh=7660
+
+=== C. different route (1) ===
+  9583: ours M1 C6-Weekday-SDon-092900_M1_134 vs MTA M7 C6-Weekday-SDon-092600_M7_208; our-trip-on-other-veh=9581
+
+=== D. big ETA deltas, trip-matched TUs (|delta|>180s in 264 of 7437 matched TUs) ===
+shape: {'drift_grows_downstream': 205, 'offset_from_start': 49, 'mid_trip_bump': 10}
+  offset_from_start   = already >2 min apart at the bus's NEXT stop (position/deviation disagreement)
+  drift_grows_downstream = agree near-term, diverge along the trip (link-time / blend difference)
+top routes: [('X28', 19), ('SIM1', 18), ('SIM4', 15), ('B4', 15), ('M11', 15), ('X38', 13), ('B61', 13), ('Q16', 9), ('B13', 9), ('B67', 8), ('B43', 8), ('B41', 8)]
+big-delta stop-predictions by horizon (min): {'15-30': 372, '30+': 1976, '5-15': 68, '0-5': 10}
+  4891 B6 102500_B6_270: shared=28 big=28 first=-1669s last=-1680s max=-1702s shape=offset_from_start
+  4891 B6 102500_B6_270: shared=28 big=28 first=-1633s last=-1681s max=-1686s shape=offset_from_start
+  4891 B6 102500_B6_270: shared=28 big=28 first=-1639s last=-1644s max=-1672s shape=offset_from_start
+  8767 Q84 105500_MISC_837: shared=23 big=23 first=-1359s last=-1375s max=-1375s shape=offset_from_start
+  2460 X38 103000_X2838_806: shared=29 big=20 first=+42s last=+789s max=+797s shape=drift_grows_downstream
+  2460 X38 103000_X2838_806: shared=30 big=20 first=+10s last=+745s max=+753s shape=drift_grows_downstream
+  2460 X38 103000_X2838_806: shared=29 big=20 first=+12s last=+741s max=+749s shape=drift_grows_downstream
+  2573 X38 101000_B64_507: shared=22 big=20 first=+2s last=+733s max=+741s shape=drift_grows_downstream
+  2573 X38 101000_B64_507: shared=22 big=20 first=+0s last=+731s max=+740s shape=drift_grows_downstream
+  2573 X38 101000_B64_507: shared=22 big=20 first=-13s last=+723s max=+732s shape=drift_grows_downstream
+  2475 X38 102000_X2838_818: shared=22 big=15 first=+45s last=+695s max=+698s shape=drift_grows_downstream
+  2475 X38 102000_X2838_818: shared=22 big=15 first=+23s last=+668s max=+678s shape=drift_grows_downstream
