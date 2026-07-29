@@ -46,7 +46,13 @@
         <property name="path" value="/data/bundle-src/wholeMTA/GTFS_MTABC_C6_REG_06282026.zip" />
     </bean>
 
-    <bean id="multiCSVLogger" class="org.onebusaway.nyc.transit_data_federation.bundle.tasks.MultiCSVLogger"/>
+    <!-- basePath must be set. Without it MultiCSVLogger falls back to java.io.tmpdir, where the
+         build's per-trip diagnostic CSVs (unmatched trips, duplicate runs, null sign codes, and a
+         summary of row counts) are easily lost. Writing them under the bundle output directory keeps
+         them alongside the bundle they describe. -->
+    <bean id="multiCSVLogger" class="org.onebusaway.nyc.transit_data_federation.bundle.tasks.MultiCSVLogger">
+        <property name="basePath" value="${bundlePath}/csv" />
+    </bean>
     <bean id="clearCSVsTask" class="org.onebusaway.nyc.transit_data_federation.bundle.tasks.ClearCSVTask">
         <property name="logger" ref="multiCSVLogger"/>
     </bean>
@@ -62,6 +68,11 @@
     <bean id="stifLoaderTask" class="org.onebusaway.nyc.transit_data_federation.bundle.tasks.stif.stifImport.StifImportTask">
         <property name="logger" ref="multiCSVLogger"/>
         <property name="stifPath" value="/data/bundle-src/wholeMTA/stif-c6-all" />
+        <!-- Do not set excludeNonRevenue=false here. It appears to fix routes whose trips are dropped
+             during STIF matching, but it re-keys every trip: it recovers trips carrying a non-revenue
+             stop at the start while breaking the larger set carrying one at the end. Neither setting of
+             this flag is correct. The two halves of the match key are built inconsistently, which is
+             handled in StifTripLoaderSupport instead. -->
         <property name="notInServiceDscPath" value="/data/bundle-src/wholeMTA/NotInServiceDSCs.txt" />
     </bean>
     <bean class="org.onebusaway.transit_data_federation.bundle.model.TaskDefinition">
