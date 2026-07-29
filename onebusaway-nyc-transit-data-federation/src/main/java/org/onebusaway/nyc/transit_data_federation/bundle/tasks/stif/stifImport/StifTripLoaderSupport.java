@@ -48,10 +48,28 @@ public class StifTripLoaderSupport {
 
   private Map<TripIdentifier, List<Trip>> tripsByIdentifier;
 
+  /**
+   * Secondary index of the same GTFS trips, keyed on the identifier built WITHOUT skipping
+   * non-revenue stop times. Consulted only when the primary lookup misses.
+   *
+   * The two halves of the match key are built differently: the GTFS half
+   * ({@link #getTripAsIdentifier}) honours {@link #_excludeNonRevenue} and skips non-revenue stops at
+   * either end of a trip, while the STIF half ({@link #getIdentifierForStifTrip}) always uses its
+   * first and last event record. Trips whose GTFS shape carries a non-revenue stop at either end
+   * therefore never match, and are left with no sign code and no run data — so no candidate blocks
+   * can be built for the vehicles running them.
+   *
+   * Both indexes hold exact keys and this one is only a fallback, so a match that already succeeds
+   * cannot change and no new ambiguity is introduced.
+   */
+  private Map<TripIdentifier, List<Trip>> tripsByRawIdentifier;
+
   private Map<String, String> stopIdsByLocation = new HashMap<String, String>();
 
   private int _totalTripCount;
-  
+
+  private int _rawKeyMatchCount;
+
   private Boolean _excludeNonRevenue = true;
 
   public void setGtfsDao(GtfsMutableRelationalDao dao) {
@@ -96,6 +114,7 @@ public class StifTripLoaderSupport {
     if (tripsByIdentifier == null) {
 
       tripsByIdentifier = new HashMap<TripIdentifier, List<Trip>>();
+      tripsByRawIdentifier = new HashMap<TripIdentifier, List<Trip>>();
 
       Collection<Trip> allTrips = gtfsDao.getAllTrips();
       _totalTripCount = allTrips.size();
@@ -113,10 +132,42 @@ public class StifTripLoaderSupport {
           tripsByIdentifier.put(tripIdentifier, trips);
         }
         trips.add(trip);
+
+        // Also index the trip under its non-revenue-inclusive key, when that differs.
+        if (_excludeNonRevenue) {
+          TripIdentifier rawIdentifier = getTripAsIdentifier(trip, false);
+          if (!rawIdentifier.equals(tripIdentifier)) {
+            List<Trip> rawTrips = tripsByRawIdentifier.get(rawIdentifier);
+            if (rawTrips == null) {
+              rawTrips = new ArrayList<Trip>();
+              tripsByRawIdentifier.put(rawIdentifier, rawTrips);
+            }
+            rawTrips.add(trip);
+          }
+        }
       }
+      _log.info("indexed " + tripsByIdentifier.size() + " revenue keys and "
+          + tripsByRawIdentifier.size() + " additional raw keys for " + _totalTripCount + " trips");
     }
 
-    return tripsByIdentifier.get(id);
+    List<Trip> exact = tripsByIdentifier.get(id);
+    if (exact != null && !exact.isEmpty()) {
+      return exact;
+    }
+    List<Trip> raw = tripsByRawIdentifier.get(id);
+    if (raw != null && !raw.isEmpty()) {
+      _rawKeyMatchCount++;
+      if (_rawKeyMatchCount <= 20) {
+        _log.info("matched " + id + " on the non-revenue-inclusive key");
+      }
+      return raw;
+    }
+    return null;
+  }
+
+  /** STIF trips matched via the secondary index; 0 means every trip matched the primary key. */
+  public int getRawKeyMatchCount() {
+    return _rawKeyMatchCount;
   }
 
   /****
@@ -128,6 +179,14 @@ public class StifTripLoaderSupport {
   }
 
   public TripIdentifier getTripAsIdentifier(final Trip trip) {
+    return getTripAsIdentifier(trip, _excludeNonRevenue);
+  }
+
+  /**
+   * @param excludeNonRevenue when true the first/last stop and time skip non-revenue stop times;
+   *        when false they are taken as-is. Both forms are indexed, so a STIF trip can match either.
+   */
+  public TripIdentifier getTripAsIdentifier(final Trip trip, final boolean excludeNonRevenue) {
     String routeName = trip.getRoute().getId().getId();
     int startTime = -1, endTime = -1;
     String startStop;
@@ -147,7 +206,7 @@ public class StifTripLoaderSupport {
         SQLException {
           final String excludeNonRevenueSQL = "SELECT st.departureTime, st.stop.id.id FROM StopTime st WHERE st.trip = :trip AND st.departureTime >= 0 AND st.pickUpType = 0 ORDER BY st.stopSequence ASC LIMIT 1";
           final String includeNonRevenueSQL = "SELECT st.departureTime, st.stop.id.id FROM StopTime st WHERE st.trip = :trip AND st.departureTime >= 0 ORDER BY st.stopSequence ASC LIMIT 1";
-          final String sqlStatement = _excludeNonRevenue ? excludeNonRevenueSQL : includeNonRevenueSQL;
+          final String sqlStatement = excludeNonRevenue ? excludeNonRevenueSQL : includeNonRevenueSQL;
           Query query = session.createQuery(sqlStatement);
           query.setParameter("trip", trip);
           return query.list();
@@ -163,7 +222,7 @@ public class StifTripLoaderSupport {
         SQLException {
           final String excludeNonRevenueSQL = "SELECT st.arrivalTime FROM StopTime st WHERE st.trip = :trip AND st.arrivalTime >= 0 AND st.dropOffType = 0 ORDER BY st.stopSequence DESC LIMIT 1";
           final String includeNonRevenueSQL = "SELECT st.arrivalTime FROM StopTime st WHERE st.trip = :trip AND st.arrivalTime >= 0 ORDER BY st.stopSequence DESC LIMIT 1";
-          final String sqlStatement = _excludeNonRevenue ? excludeNonRevenueSQL : includeNonRevenueSQL; 
+          final String sqlStatement = excludeNonRevenue ? excludeNonRevenueSQL : includeNonRevenueSQL; 
           Query query = session.createQuery(sqlStatement);
           query.setParameter("trip", trip);
           return query.list();
@@ -181,7 +240,7 @@ public class StifTripLoaderSupport {
       boolean foundFirstStop = false;
       
       try{
-        while(!foundFirstStop && _excludeNonRevenue) {
+        while(!foundFirstStop && excludeNonRevenue) {
           // pick up type 0 === allowed
           if (stopTimes.get(actualFirstStop).getPickupType() == 0){
                foundFirstStop = true;
@@ -203,7 +262,7 @@ public class StifTripLoaderSupport {
       boolean foundLastStop = false;
       
       try{
-        while(!foundLastStop && _excludeNonRevenue) {
+        while(!foundLastStop && excludeNonRevenue) {
           // dropOffType == 0 when regularly scheduled. 
           if (stopTimes.get(actualLastStop).getDropOffType() == 0 ){
             foundLastStop = true;
