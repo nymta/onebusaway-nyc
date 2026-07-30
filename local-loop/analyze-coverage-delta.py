@@ -59,6 +59,12 @@ def agency(vid):
     return "MTABC" if vid.startswith("MTABC") else "NYCT"
 
 
+def q(sorted_vals, frac):
+    if not sorted_vals:
+        return float("nan")
+    return sorted_vals[min(len(sorted_vals) - 1, int(frac * len(sorted_vals)))]
+
+
 def describe(ages):
     a = sorted(x for x in ages if x is not None)
     if not a:
@@ -135,8 +141,22 @@ def main():
              100.0 * ours_only_not_in_prod_tu / max(1, ours_only_total)))
     print("   by agency: %s" % dict(ours_only_agency))
     print("   top routes: %s" % ours_only_routes.most_common(8))
-    print("   READ: age skewing older than the both-feeds baseline => publication TTL difference")
-    print("         (we keep a bus in the feed longer after its last report than prod does).")
+    # Decide the reading from the data rather than asserting one: a stale tail means a publication
+    # expiry difference, whereas an age profile matching the shared baseline exhausts that explanation
+    # and leaves buses prod is deliberately suppressing.
+    oo = sorted(x for x in ours_only_ages if x is not None)
+    sh = sorted(x for x in both_ages_ours if x is not None)
+    if oo and sh:
+        oo_p90, sh_p90 = q(oo, 0.90), q(sh, 0.90)
+        if oo_p90 > 2 * sh_p90:
+            print("   READ: their p90 (%.0f s) is far above the shared baseline (%.0f s) => a publication"
+                  % (oo_p90, sh_p90))
+            print("         expiry difference: we keep a bus in the feed longer after its last report.")
+        else:
+            print("   READ: their age profile matches the shared baseline (p90 %.0f s vs %.0f s), so"
+                  % (oo_p90, sh_p90))
+            print("         staleness is EXHAUSTED as an explanation. These are normally-reporting buses")
+            print("         prod suppresses \u2014 assignment/depot filtering we lack, not stale records.")
 
     print("\n--- PROD-ONLY: why do we not have them? ---")
     print("   their age in PROD's feed: %s" % describe(prod_only_ages))

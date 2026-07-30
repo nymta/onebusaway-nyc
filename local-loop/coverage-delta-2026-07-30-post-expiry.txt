@@ -1,0 +1,33 @@
+round 1: ours 3127, prod 3120, both 3082 | ours-only 45, prod-only 38
+round 2: ours 3139, prod 3132, both 3089 | ours-only 50, prod-only 43
+round 3: ours 3161, prod 3147, both 3112 | ours-only 49, prod-only 35
+
+2026-07-30 16:01:02 EDT
+==============================================================================
+NET difference: ours 3142 vs prod 3133  =  +9
+...but that net hides two separate populations:
+   in both feeds : 3094
+   OURS only     : 48   (we publish, prod does not)
+   PROD only     : 39   (prod publishes, we do not)
+==============================================================================
+
+--- baseline: position age of buses BOTH feeds have ---
+   ours: median  19 s, p90  36 s, max  126 s
+   prod: median  31 s, p90  48 s, max  137 s
+
+--- OURS-ONLY: why does prod not have them? ---
+   their age in OUR feed: median  21 s, p90  38 s, max  129 s
+   absent from prod's TripUpdates too: 128 of 144 (89%)
+   by agency: {'NYCT': 106, 'MTABC': 38}
+   top routes: [('B6', 6), ('SIM1C', 5), ('Q101', 4), ('Q17', 4), ('Q67', 4), ('M100', 4), ('B62', 3), ('Q100', 3)]
+   READ: age skewing older than the both-feeds baseline => publication TTL difference
+         (we keep a bus in the feed longer after its last report than prod does).
+
+--- PROD-ONLY: why do we not have them? ---
+   their age in PROD's feed: median  33 s, p90  46 s, max  139 s
+   by agency: {'NYCT': 92, 'MTABC': 24}
+   top routes: [('BX30', 5), ('S40', 4), ('BX36', 4), ('B47', 4), ('BX42', 4), ('M11', 4), ('Q59', 3), ('BX21', 3)]
+   spread over 66 routes; top 5 routes hold 18% of them
+   READ: fresh in prod + concentrated on few routes => schedule-data gap for those routes.
+         fresh in prod + spread thin over many routes => per-vehicle inference misses
+         (no usable sign code / run, just pulled out, or geometry that will not snap).
