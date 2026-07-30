@@ -4,8 +4,11 @@ source /opt/oba/env-common.sh
 export MAVEN_OPTS="-Xmx6g"
 mkdir -p /data/oba/gtfsrt-appdb
 cd "$MAIN/onebusaway-nyc-gtfsrt-webapp"
+# Publication age cut-off, matching the 120 s ceiling measured in the production feed. Without it we
+# publish a bus indefinitely after its last AVL report (our tail reached 300 s).
 exec mvn -B -P local-ie-testing -DskipTests -Dlicense.skip=true \
   -Dbundle.location="$BUNDLE" -Dbundle.mode.standalone=true -Dtdm.host= \
   -Dorg.onebusaway.nyc.tdm.bundle.batchmode=true \
+  -Doba.feed.maxVehicleAgeSec=120 \
   -Djetty.http.port=8083 \
   "$JETTY"
