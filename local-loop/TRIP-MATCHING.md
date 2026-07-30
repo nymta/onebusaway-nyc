@@ -87,7 +87,7 @@ when effective sample size drops below 0.75 × N. Bad hypotheses die; good ones 
 
 - A **single** fix is ambiguous; trip identity **converges as pings accumulate** — which is exactly why
   injecting a *sequence* of fixes is required to get an `IN_PROGRESS` match (see `RUNBOOK.md` §6).
-- This is the crux of the **5 s vs 30 s** accuracy hypothesis (see `PRODUCTIONIZING.md`): 6× more observations
+- This is the crux of the **finer-sampling** accuracy hypothesis (see `PRODUCTIONIZING.md`; note the realised advantage is **~2.4× end-to-end, not 6×** — `FINDINGS-SUMMARY.md` §1a): more observations
   → faster convergence and a tighter position estimate → both *which* trip and *where on it* are sharper, and
   the lattice's observed travel times (which feed predictions) are more accurate.
 

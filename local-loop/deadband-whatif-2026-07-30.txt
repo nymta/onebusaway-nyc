@@ -1,0 +1,33 @@
+raw AVL replay: 2026-07-30 windows 08-45, 08-50
+  2026-07-30 08-45: +267102 fixes
+  2026-07-30 08-50: +266546 fixes
+
+inbound: 533648 fixes over 600 s from 4986 vehicles = **889 fixes/s** (5.6 s mean cadence/vehicle)
+(5505 fixes, 1.0%, report a clock >1 h from receipt time — the deadband keys off the bus clock, so these mostly bypass it)
+measured sustainable throughput: ~254-270 fixes/s
+
+| minMeters | minIntervalSec | maxAgeSec | admitted fixes/s | vs inbound | mean cadence/veh | verdict |
+|---|---|---|---|---|---|---|
+| 10 *(today)* | 7 | 30 | **286** | 32% | 21.4 s | **over capacity** — queue forms |
+| 10 | 10 | 30 | **279** | 31% | 21.7 s | **over capacity** — queue forms |
+| 10 | 12 | 30 | **236** | 27% | 24.3 s | **under capacity** — queue drains |
+| 10 | 15 | 30 | **226** | 25% | 25.1 s | **under capacity** — queue drains |
+| 10 | 20 | 45 | **173** | 19% | 33.5 s | **under capacity** — queue drains |
+| 15 | 12 | 30 | **231** | 26% | 24.7 s | **under capacity** — queue drains |
+| 25 | 15 | 45 | **189** | 21% | 31.7 s | **under capacity** — queue drains |
+| 10 | 10 | 45 | **254** | 29% | 26.3 s | marginal |
+
+### Why each fix was admitted or dropped (this is what limits the deadband)
+
+| setting | first seen | kept: moved | kept: staleness failsafe | kept: clock back | dropped: rate cap | dropped: not moved |
+|---|---|---|---|---|---|---|
+| 10 m / 7 s / 30 s | 0.9% | **23.0%** | **8.1%** | 0.0% | 31.0% | 36.9% |
+| 10 m / 10 s / 30 s | 0.9% | **22.3%** | **8.1%** | 0.0% | 32.9% | 35.8% |
+| 10 m / 12 s / 30 s | 0.9% | **17.7%** | **7.8%** | 0.0% | 47.3% | 26.2% |
+| 10 m / 15 s / 30 s | 0.9% | **16.7%** | **7.8%** | 0.0% | 50.8% | 23.7% |
+| 10 m / 20 s / 45 s | 0.9% | **14.3%** | **4.2%** | 0.0% | 57.1% | 23.5% |
+| 15 m / 12 s / 30 s | 0.9% | **16.7%** | **8.3%** | 0.0% | 46.3% | 27.8% |
+| 25 m / 15 s / 45 s | 0.9% | **15.3%** | **4.9%** | 0.0% | 42.4% | 36.4% |
+| 10 m / 10 s / 45 s | 0.9% | **23.2%** | **4.4%** | 0.0% | 30.0% | 41.5% |
+
+Demand side only: this does not model per-fix CPU cost, which needs the host.

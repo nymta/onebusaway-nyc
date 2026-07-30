@@ -85,6 +85,10 @@ duress, so none of the below is shedding-induced.
 **Signature.** 792 MTABC vehicles and 91 routes in prod, zero in ours (Q06–Q115, B100/B103,
 QM/BM/BXM, SIM8/10). Ours 2,655 vehicles vs prod 3,483.
 
+> **Superseded 2026-07-29:** the MTABC STIF was obtained, added to the bundle source, and the bundle
+> rebuilt. MTABC is now live (0 routes missing vs MTA's feed) — see `FINDINGS-SUMMARY.md` §4A. The
+> analysis below records the state on 2026-07-27 and the reasoning that led to the fix.
+
 **Root cause (previously code-confirmed, unchanged):** no MTABC STIF in the bundle → no DSC→trip
 sign-code map and no run data → `hasValidDsc=false` → snap generation skipped
 (`BlocksFromObservationServiceImpl.java:196-207`), spatial snaps discarded by

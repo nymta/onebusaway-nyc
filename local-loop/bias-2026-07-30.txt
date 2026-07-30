@@ -1,0 +1,79 @@
+round 1/3
+round 2/3
+round 3/3
+
+=== 1. Rollover artifact (our current trip = prod's NEXT trip) ===
+trip-matched pairs: 9428 ; matched against prod's CURRENT trip: 9411 (99.8%) ; against prod's NEXT/later trip: 17 (0.2%)
+unique vehicles affected: 13 of 3261 matched
+first-stop offset on rollover pairs: median -215 s, mean -389 s, p10 -895, p90 +0, |>180s| = 9/17
+top routes: [('BX1', 2), ('B49', 2), ('M35', 2), ('B31', 2), ('B83', 1), ('M66', 1), ('M42', 1), ('M116', 1), ('Q87', 1), ('BX15', 1)]
+
+=== 2. Delta stats with vs without rollover pairs ===
+| bucket                       |       n | median |   mean |   MAE |       p10 / p90 |
+|------------------------------|---------|--------|--------|-------|-----------------|
+| ALL prod-current only        |  145585 |    -14 |    -14 |    43 |    -72 /    +42 |
+| ALL ROLLOVER pairs           |     328 |   -425 |   -503 |   503 |   -923 /    -10 |
+| 0-5 prod-current only        |   24779 |     -6 |     -4 |    24 |    -41 /    +32 |
+| 0-5 ROLLOVER pairs           |      12 |    -60 |    -67 |    67 |   -112 /     +0 |
+| 5-15 prod-current only       |   40115 |    -10 |     -9 |    31 |    -53 /    +38 |
+| 5-15 ROLLOVER pairs          |      61 |   -108 |   -231 |   231 |   -429 /     -6 |
+| 15-30 prod-current only      |   41302 |    -15 |    -14 |    43 |    -72 /    +45 |
+| 15-30 ROLLOVER pairs         |     137 |   -253 |   -445 |   445 |   -904 /     -8 |
+| 30+ prod-current only        |   39389 |    -29 |    -24 |    68 |   -107 /    +58 |
+| 30+ ROLLOVER pairs           |     118 |   -910 |   -756 |   756 |  -1153 /    -33 |
+
+=== 3. Local vs express (rollover pairs excluded) ===
+| ALL LOC                      |  134151 |    -14 |    -14 |    38 |    -67 /    +39 |
+| ALL EXP                      |   11434 |    -19 |     -4 |   106 |   -144 /   +194 |
+| 0-5 LOC                      |   23257 |     -6 |     -4 |    24 |    -40 /    +32 |
+| 0-5 EXP                      |    1522 |    -10 |     -7 |    30 |    -50 /    +39 |
+| 5-15 LOC                     |   37278 |    -10 |     -8 |    30 |    -51 /    +37 |
+| 5-15 EXP                     |    2837 |    -21 |    -17 |    50 |    -86 /    +55 |
+| 15-30 LOC                    |   38535 |    -15 |    -14 |    39 |    -68 /    +42 |
+| 15-30 EXP                    |    2767 |    -27 |    -12 |    92 |   -131 /   +133 |
+| 30+ LOC                      |   35081 |    -30 |    -28 |    55 |    -98 /    +42 |
+| 30+ EXP                      |    4308 |    -21 |    +10 |   178 |   -241 /   +326 |
+
+=== 4. Position staleness vs first-stop delta (non-rollover) ===
+local: n=7565 ; prod VP age − our VP age: median -39 s ; inter-feed position distance: median 101 m, p90 210 m
+   dist     0-100    m: n= 3713  median delta     -3 s  MAE    19 s
+   dist   100-300    m: n= 3683  median delta    -15 s  MAE    29 s
+   dist   300-1000   m: n=  169  median delta    -25 s  MAE    66 s
+express: n=1114 ; prod VP age − our VP age: median -36 s ; inter-feed position distance: median 173 m, p90 413 m
+   dist     0-100    m: n=  302  median delta     -4 s  MAE    39 s
+   dist   100-300    m: n=  549  median delta    -17 s  MAE    56 s
+   dist   300-1000   m: n=  263  median delta    -45 s  MAE    91 s
+
+=== 5. THE CONTROL: median delta by class x position distance x horizon ===
+bias ~0 in the 0-50 m row  => prod's staler anchor, not our optimism
+bias surviving at 0-50 m and growing with horizon => real link-time difference
+
+--- local ---
+dist bin                 0-5          5-15         15-30           30+
+0-50 m           +0 (n=5389)   -1 (n=8399)   -6 (n=8480)  -22 (n=7235)
+50-150 m        -7 (n=12102) -11 (n=19496) -15 (n=20354) -28 (n=18852)
+150-400 m       -15 (n=5602)  -18 (n=9116)  -23 (n=9405)  -39 (n=8713)
+400-inf m        -26 (n=111)   -41 (n=167)   -45 (n=188)  -103 (n=182)
+
+--- express ---
+dist bin                 0-5          5-15         15-30           30+
+0-50 m            +3 (n=250)    +4 (n=286)   +12 (n=177)    +0 (n=462)
+50-150 m          -9 (n=615)   -13 (n=853)   -10 (n=537)  -15 (n=1496)
+150-400 m        -17 (n=579)  -23 (n=1340)  -27 (n=1584)  -20 (n=2056)
+400-inf m         -48 (n=77)   -55 (n=358)   -52 (n=469)  -126 (n=294)
+
+=== 6. 30+ min bias by route (n>=300) — one-sided would suggest policy, two-sided links ===
+  B16      median   -150 s  (n=344)
+  Q25      median   -120 s  (n=379)
+  B9       median   -103 s  (n=738)
+  Q60      median    -99 s  (n=477)
+  M1       median    -62 s  (n=610)
+  Q54      median    -58 s  (n=312)
+  B49      median    -54 s  (n=534)
+  B62      median    -53 s  (n=301)
+   ...
+  M103     median     +1 s  (n=447)
+  M2       median     +2 s  (n=506)
+  Q20      median     +3 s  (n=331)
+  B103     median    +26 s  (n=451)
+  SIM1C    median    +66 s  (n=527)

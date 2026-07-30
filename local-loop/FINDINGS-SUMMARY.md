@@ -1,8 +1,15 @@
 # EC2 OBA vs MTA production GTFS-RT — consolidated findings
 
-**Single entry point** for everything learned from the feed-comparison work, 2026-07-22 → 2026-07-28
-(6 live runs + 1 confounder-free archive run + a Mongo history study). Every discrepancy class, its
-root cause, the evidence, and the fix.
+**Single entry point** for everything learned from the feed-comparison work, 2026-07-22 → 2026-07-30
+(8 live runs + 4 confounder-free archive runs + a Mongo history study), including the two coverage
+fixes deployed on 07-29 and the freshness regression they caused, found on 07-30. Every discrepancy
+class, its root cause, the evidence, and the fix.
+
+> ⚠️ **Current state (2026-07-30): coverage is at parity and trip matching is at its best ever, but
+> the deployment is running with 69 s-old position anchors instead of 15 s, because the +30% fleet from
+> the coverage fix pushed the host past its peak capacity and load-shedding now fires at every peak.
+> Near-term ETA accuracy has roughly halved as a result. Restoring freshness is the top action (§2c,
+> §8 #1), and ETA numbers measured before and after 2026-07-29 are not comparable until it is.**
 
 This document *summarises*; it does not replace the sources:
 
@@ -11,7 +18,7 @@ This document *summarises*; it does not replace the sources:
 | [`COMPARISON-RUNBOOK.md`](COMPARISON-RUNBOOK.md) | how to re-run everything; baselines; confounder checklist |
 | [`feed-comparison-report.md`](feed-comparison-report.md) | running log, one dated section per run + the 07-22 code deep-dive |
 | [`discrepancy-investigation-2026-07-27-pm.md`](discrepancy-investigation-2026-07-27-pm.md) | the deepest single write-up (§1–11): B1, bias decomposition, history depth |
-| `feed-comparison-YYYY-MM-DD*.md`, `archive-window-*.md`, `discrepancy-detail.txt` | raw tool output |
+| `feed-comparison-YYYY-MM-DD*.md`, `archive-window-*.md`, `discrepancy-detail.txt`, `bias-*.txt` | raw tool output. The fixed-window evidence for §2c is `archive-window-2026-07-29-vs-30-am-NYCT.md` and `archive-window-pm-nyct-series.md` |
 | [`EC2-DEPLOYMENT.md`](EC2-DEPLOYMENT.md), [`PRODUCTIONIZING.md`](PRODUCTIONIZING.md) | host/ops and the prediction-engine model |
 
 ---
@@ -20,47 +27,438 @@ This document *summarises*; it does not replace the sources:
 
 - **Ours:** `http://ec2-52-70-255-34.compute-1.amazonaws.com/{tripUpdates,vehiclePositions}` — a
   single-host experimental OBA-NYC deployment. **Same codebase and same BusTech AVL feed as prod**,
-  differing in four ways that matter: **5 s GPS** (vs prod's effective ~30 s), **no UTS operator→run
-  assignments**, **no MTABC STIF in the bundle**, and **Mongo prediction history only since
-  2026-07-21**. Prediction weights 20/40/40 — *verified identical to prod's TDM config*.
-- **Prod:** `http://gtfsrt.prod.obanyc.com/...` — MTA's official Bus Time GTFS-RT. Public, no API key.
+  differing in three ways that matter: **how much of the shared GPS stream we process** (§1a — *not* a
+  finer GPS source; that is a common misstatement), **no UTS operator→run assignments**, and **Mongo
+  prediction history only since 2026-07-21** (MTABC only since 2026-07-29). The MTABC-STIF gap that
+  dominated earlier rounds was **closed 2026-07-29**; both agencies are now in the bundle. Prediction
+  weights 20/40/40 — *verified identical to prod's TDM config*.
+- **Prod ("BusTech prod"):** `http://gtfsrt.prod.obanyc.com/...` — the incumbent production Bus Time
+  GTFS-RT. Public, no API key. **Naming: both deployments are MTA's**, so "prod" here means the
+  vendor-operated production instance (same OneBusAway codebase), not "MTA" as opposed to us. Where
+  this document says *MTA* it means the agency or its data owners (MTA Bus Company, an MTA access
+  grant, MTA's TDM), not the production system.
 - Both emit bare GTFS ids and identical STIF-style `trip_id`s (**100% parity vs the C6 public GTFS**),
   so the feeds join directly on vehicle/trip/stop.
-- **Goal:** an A/B test — finer GPS plus warmed history should eventually *beat* prod. Alignment with
+- **Goal:** an A/B test — processing more of the shared GPS stream (§1a) plus warmed history should eventually *beat* prod. Alignment with
   prod is therefore a **proxy for sanity, not the target**. Nothing here says which engine is more
   accurate; that needs the ground-truth harness (PRODUCTIONIZING §5).
 
+### 1a. What the GPS difference actually is — corrected 2026-07-30
+
+Earlier versions of this document, the runbook, and `PRODUCTIONIZING.md` framed this as **"we run 5 s GPS
+vs prod's 30 s"**, implying a ~6× advantage. Measurement does not support that, and the distinction
+matters because this is the experiment's independent variable.
+
+| | value | source |
+|---|---|---|
+| BusTech AVL source rate — **identical for both systems** | **5.6 s per bus** | 533,648 fixes / 4,986 vehicles / 600 s, replayed from the `bustechGps` archive |
+| fixes we *admit* to inference after the deadband | **286/s of 889/s (32%)** | `simulate-deadband.py`, real peak window |
+| our effective sampling — **moving** bus | **~11 s** | rate cap 7 s > source 5.6 s, so every other fix is skipped |
+| our effective sampling — **stationary** bus | **~30 s** | held by the `maxAgeSec` failsafe, since it never moves 10 m |
+| our effective sampling — fleet mean | **21.4 s** | measured |
+| MTA's documented pipeline rate | ~30 s | MTA documentation |
+| **published position anchor age — the end-to-end number** | **ours 16–19 s vs MTA's 39–48 s (~2.4×)** | `probe-coverage.py`, `analyze-anchor-age.py` |
+
+**The accurate claim: we do not have finer GPS — we have the same GPS, and we process and republish more
+of it.** Both systems drink from the same 5.6 s BusTech stream; MTA down-samples to ~30 s, and we
+down-sample less. The real, defensible, end-to-end statement is the **published anchor age: ~2.4×
+fresher**, not 6×.
+
+**Two nuances worth carrying forward:**
+
+1. **The fleet-mean 21 s figure understates us**, because the deadband is *designed* to skip redundant
+   fixes from buses that have not moved 10 m. A stationary bus genuinely does not need reprocessing — its
+   position is unchanged. For a **moving** bus, which is the case that matters for link travel times, the
+   sampling is **~11 s**. So the mean is dragged down by correct behaviour, not by coarseness.
+2. **The rate cap is not the binding limit once it drops below the source rate — the distance test is.**
+   At `minIntervalSec=3` only 0.1% of fixes are dropped by the cap while **52% are dropped as "not
+   moved"**. So no rate-cap setting alone recovers the full 5.6 s stream; that needs `minMeters` lowered
+   too, which costs far more load (`0 m / 5 s` admits **822 fixes/s**, roughly 2× even the resized host's
+   ceiling).
+
+**Opportunity now that the host has been resized (§2d).** `minIntervalSec` 7 → **5** would take a moving
+bus from ~11 s to the full **5.6 s source rate** — genuinely realising the premise this A/B was built to
+test — at **405 fixes/s**. That sits at the top of the resized host's estimated ~380–405/s ceiling, so it
+is *plausible but marginal*, and the ceiling is an extrapolation from the 32-core measurement rather than
+a measured value. **Sequence: confirm the PM peak is healthy at the current 7 s first (§2d), then try 5 s
+and re-measure.** Do not do both at once.
+
 ---
 
-## 2. Headline: the deployment behaves like prod, and is converging
+## 2. Headline: coverage solved, freshness now the binding constraint
 
-| metric | 07-22 mid | 07-23 AM | 07-24 PM pk | 07-27 AM pk | 07-27 PM pk |
-|---|---|---|---|---|---|
-| same `trip_id` | 97.3% | 98.1% | 96.5% | 96.7% | **97.1%** |
-| ETA MAE — ALL | 53 s | 45 s | 41 s | 37 s | **37 s** |
-| — 0–5 min | 22 | 17 | 16 | 18 | 16 |
-| — 15–30 min | 55 | 47 | 36 | 36 | 34 |
-| — 30+ min | 81 | 73 | 70 | 59 | **59** |
-| ETA median — ALL | +2 | +4 | −4 | −7 | −4 |
-| ETA median — 30+ min | +10 | +14 | −13 | −18 | −10 |
-| express MAE | 113 | 109 | 108 | 76 | 97 |
-| NYCT vehicle coverage | 98–99% | 99% | 98–99% | 98% | 97.4% |
+> **2026-07-29: both coverage defects were fixed and deployed. The network is at parity with prod —
+> 0 routes missing, 99% of prod's vehicles, and trip matching is the best it has ever been (98.4% on
+> 07-30).** See §2b for what changed.
+>
+> **2026-07-30: that fix cost prediction freshness.** The +30% fleet pushed the host past its peak
+> capacity; our position anchors went 15 s → 69 s and near-term ETA MAE roughly doubled on the
+> *unchanged* NYCT fleet. See §2c — this is now the most important open item.
 
-**Confounder-free cross-day check** (identical 17:25–17:35 clock window, replayed from the S3
-archives — 1.4 M / 2.3 M stop-prediction deltas):
+| metric | 07-22 mid | 07-23 AM | 07-24 PM pk | 07-27 AM pk | 07-27 PM pk | 07-29 PM pk | **07-30 AM pk** |
+|---|---|---|---|---|---|---|---|
+| same `trip_id` | 97.3% | 98.1% | 96.5% | 96.7% | 97.1% | 98.0% | **98.4%** |
+| ETA MAE — ALL | 53 s | 45 s | 41 s | 37 s | 37 s | 49 s | 44 s |
+| — 0–5 min | 22 | 17 | 16 | 18 | 16 | 23 | 23 |
+| — 15–30 min | 55 | 47 | 36 | 36 | 34 | 43 | 42 |
+| — 30+ min | 81 | 73 | 70 | 59 | 59 | 79 | 72 |
+| ETA median — ALL | +2 | +4 | −4 | −7 | −4 | −11 | −13 |
+| ETA median — 30+ min | +10 | +14 | −13 | −18 | −10 | −21 | **−28** |
+| express MAE | 113 | 109 | 108 | 76 | 97 | 131 | 104 |
+| vehicle coverage | 98–99% NYCT | 99% | 98–99% | 98% | 97.4% | 98.4/97.0% | **97.7–98.3% NYCT / 98.0% MTABC** |
+| routes missing vs prod | 74 | 75 | 93 | 90 | 92 | **0** | **0** |
+| **our position anchor age** | 13–19 s | 13–19 s | 15 s | 15 s | 15 s | **69 s** | **69 s** |
 
-| | 07-24 (Fri) | 07-27 (Mon) |
+**This live table is for coverage and trip matching only. Do not read ETA trends off it** — it mixes
+time of day, the MTABC fleet joining on 07-29, and the anchor regression. Use the fixed-window,
+agency-held-fixed table below, which is the only clean ETA series.
+
+**Confounder-free cross-day series** (archives replayed at one clock window, **NYCT only**, ~2,560–2,610
+vehicles per row, 1–2.3 M stop-prediction deltas each):
+
+| window / date | same `trip_id` | ALL | 0–5 min | 15–30 min | 30+ min | local | express |
+|---|---|---|---|---|---|---|---|
+| **17:25** 07-24 (Fri) | 96.6% | −6 / 37 | −2 / **13** | −8 / 35 | −16 / 60 | −5 / 32 | −29 / 88 |
+| **17:25** 07-27 (Mon) | 97.2% | −5 / 38 | −2 / **13** | −6 / 33 | −13 / 65 | −4 / 30 | −32 / 119 |
+| **17:25** 07-29 (Wed, post-deploy) | 96.9% | −15 / 46 | −6 / **28** | −16 / 42 | −26 / 66 | −15 / 41 | −18 / 101 |
+| **08:45** 07-29 (Wed, pre-deploy) | 97.4% | −9 / 31 | −2 / **11** | −12 / 30 | −24 / 53 | −9 / 28 | −24 / 83 |
+| **08:45** 07-30 (Thu, post-deploy) | 97.8% | −16 / 42 | −6 / **25** | −17 / 40 | −33 / 64 | −15 / 39 | −40 / 107 |
+
+**Read:** trip matching genuinely improved at AM (97.4% → 97.8% with the fleet held fixed) and is flat
+at PM. But **every ETA bucket regressed after the deploy, and the near-term bucket roughly doubled at
+both windows** (11 → 25, 13 → 28) while 30+ barely moved (65 → 66). That pattern — damage concentrated
+at short horizons, absent at long ones — is the signature of a stale position anchor, not of link
+times or of MTABC's cold history (which cannot apply here at all, since these rows are NYCT-only).
+
+**This corrects the 07-29 entry.** It recorded "NYCT improved 37 → 36 s" and a "record 98.0% match"
+from live runs; at a fixed window with the agency held fixed, NYCT ETA *regressed* (38 → 46 s) and the
+98.0% was the MTABC blend — MTABC matches better than NYCT (98.3% vs 97.8% on 07-30) because its
+longer headways leave fewer adjacent departures to confuse. The MTABC-cold-history effect was real
+too; both were present on 07-29 and the live method could not separate them.
+
+## 2b. What was deployed 2026-07-29
+
+Two fixes, both verified before and after deploy:
+
+| | before | after |
 |---|---|---|
-| same `trip_id` | 96.6% | **97.2%** |
-| ALL median / MAE | −6 / 37 | −5 / 38 |
-| 30+ min | −16 / 60 | −13 / 65 |
-| local MAE | 32 | **30** |
-| express median / MAE | −29 / 88 | **−32 / 119** |
+| **B1** (NYCT route, silently absent) | 0 of 14 vehicles | 12 of 13 |
+| Q84 / Q30 / Q75 | 43% / 43% / 50% | 80% / 100% / 100% |
+| **MTABC fleet** | **0 of ~502 (0%)** | **487 of 502 (97.0%)** |
+| MTABC routes absent | ~90 | **2** (`BXM18`, `QM32`) |
+| routes missing vs prod | 92 | **0** |
+| GTFS trips with no STIF linkage | 28,845 | **0** |
+| sign codes in bundle | 653 | **881** |
+| vehicles ours / prod | 1,953 / 2,412 | 3,356 / 3,398 |
 
-**Read:** trip matching and local ETAs genuinely improved; the long-horizon bias is flat to slightly
-shrinking; **express regressed.** Positions are 2–3× fresher than prod's throughout (ours median
-9–19 s vs prod 28–47 s). MAE 53 → 37 s over six days is real, but note the live runs' day-to-day
-deltas are time-of-day contaminated — only the fixed-window table above is clean.
+Delivered by three changes: the **dual-key STIF matcher** (§4B), the **MTABC STIF input** (§4A), and
+the build tooling that made both diagnosable (§4C).
+
+**Cost: two ~40-second feed outages** (38 s and 44 s), both measured. Only `oba-gtfsrt` interrupts the
+feed — inference and predictions were restarted first and reloaded invisibly, which is now the
+documented ordering. Bundle builds took 3.5–4 min at a 6 g heap with no OOM and no feed impact.
+
+**But the outages were not the real cost** — the sustained capacity overrun below was.
+
+## 2c. The 07-29 fix caused a freshness regression — found 2026-07-30
+
+**Symptom.** `probe-coverage.py` reported our position age at **72 s median / 89 s p90** against prod's
+**32 s**, reversing the 2–3× freshness *advantage* that held in every prior run. Four consecutive
+probes confirmed 65–74 s, and `analyze-bias.py` §4 measures it independently: **prod VP age − our VP
+age = −39 s**, where it was **+22 to +25 s** on 07-27.
+
+**Dated precisely to the deploy, and platform-wide** — archives replayed at one fixed window
+(`analyze-anchor-age.py`), NYCT only so the new MTABC fleet cannot be the cause:
+
+| window | 07-24 | 07-27 | 07-28 | 07-29 | 07-30 |
+|---|---|---|---|---|---|
+| 08:45, NYCT only (~2,600 veh) | – | 16 s | 15 s | 15 s | **69 s** |
+| 17:25, both agencies | 15 s | 15 s | 15 s | **69 s** | – |
+| feed *header* age, same windows | 5–6 s | 5 s | 4–5 s | 5 s | 6 s |
+
+MTABC's anchor age on 07-30 is **68 s**, identical to NYCT's, and the NYCT fleet size is unchanged
+across the step (2,633 → 2,620) — so this is not composition.
+
+> **The distinction that matters, and the monitoring gap it exposes: the feed is published on time;
+> the data inside it is old.** Header age never moved (4–6 s) — and header age is exactly what the
+> `FeedStalenessSeconds` metric and its alarm watch. **No existing metric observes anchor age**, which
+> is why a 4.6× freshness regression ran for a full day unnoticed. Adding it is §8 #2.
+
+**Cause: capacity, not configuration.** Verified on the host — the flags are unchanged
+(`deadband minMeters=10 minIntervalSec=7 maxAgeSec=30`, `shed maxAgeSec=50`) and inference last
+restarted at the deploy itself (07-29 18:16 UTC). What changed is load. CloudWatch at AM peak (08:00):
+
+| | 07-27 | 07-28 | 07-29 | **07-30** |
+|---|---|---|---|---|
+| `TripUpdateEntities` | 2,602 | 2,651 | 2,671 | **3,482** (+30%) |
+| `CPUUtilization` avg | 54% | 51% | 57% | **74%** |
+| `InferenceBacklogThreads` avg | 1,397 | 1,545 | 1,490 | **14,994** (max 15,244) |
+| `InferenceShedFixes` per 2 min | **0** | **0** | **0** | **3,869** (max 4,612) |
+
+`InferenceShedFixes` had been **exactly 0 for the whole recorded history** and now fires at every peak
+(2,745/interval at 07-29 PM, 3,869 at 07-30 AM), going quiet overnight as load falls. This is the §4.10
+trade-off (coverage for freshness) being exercised for the first time.
+
+**What the metric means:** `InferenceShedFixes` is the *delta* of a cumulative counter between
+`monitor.sh` runs (~2 min), i.e. **the number of AVL fixes inference threw away without running the
+particle filter at all** (`VehicleLocationInferenceServiceImpl:751-758` — a fix is dropped if it waited
+in the queue longer than `oba.shed.maxAgeSec`). It is a count, not a rate or a percentage.
+
+### The mechanism, measured at the peak itself (08:49 EDT, inside the comparison window)
+
+The engine log is far more informative than the CloudWatch metrics, and it reframes the diagnosis:
+
+| | off-peak (10:32) | **peak (08:49)** |
+|---|---|---|
+| threads active | **15–20 of 642** | **642 of 642 — pool fully saturated** |
+| avg processing time per fix | **75 ms** | **2,300–2,700 ms (~32×)** |
+| backlog counter | 277–2,278 (sawtooth) | ~14,600, pinned |
+| shed rate | 0 | ~16–32 fixes/s (only **~3%** of inflow) |
+
+**Only ~3% of fixes are actually shed, so shedding is not what makes the anchor old — queue wait is.**
+The chain is: peak demand **slightly exceeds** sustainable throughput, so a queue forms; backlog ÷
+throughput ≈ 30 s of waiting, and **`oba.shed.maxAgeSec=50` then pins the worst case** — every fix that
+survives to be processed has waited up to 50 s, which lands exactly on the observed 69 s anchor age
+(≈50 s queue + ~15 s of AVL transport and deadband, the old baseline). So the 50 s threshold is not just
+a safety net; **it is currently *setting* our anchor age.**
+
+**The two rates, both now measured rather than estimated** (`simulate-deadband.py`, replaying the real
+08:45–08:55 AVL — 533,648 raw fixes from 4,986 vehicles):
+
+| quantity | value | how |
+|---|---|---|
+| raw AVL inbound | **889 fixes/s** (5.6 s per vehicle) | counted from the `bustechGps` archive |
+| **admitted to inference** after the deadband | **286 fixes/s** (32% of inbound; **~21 s per vehicle**) | replaying `passesDeadband` exactly |
+| **sustainable throughput** | **~254–270 fixes/s** | derived: at equilibrium capacity = admitted − shed rate = 286 − (16…32) |
+| implied real per-fix cost at peak | **~114–126 ms** | 32 cores ÷ capacity (vs 75 ms off-peak) |
+
+So the system is over capacity by only **~6–12%** — a small deficit, which is why it degrades gracefully
+into a pinned queue rather than collapsing. It also cross-validates the pre-regression baseline: a ~21 s
+processing cadence implies a mean anchor age of ~10 s plus transport ≈ the 15 s that was measured for
+three straight days.
+
+> **A framing correction this forces — now written up in full at §1a.** "We run 5 s GPS vs prod's ~30 s"
+> describes the *shared source*, not what we process: the deadband thins it to ~11 s for a moving bus and
+> ~21 s fleet-mean before inference sees it. The defensible comparison is the end-to-end one — our
+> ~16 s anchor age against prod's ~39–48 s, about **2.4× fresher, not 6×**.
+
+Two aggravating factors, both worth fixing on their own merits:
+
+- **The thread pool is 20× oversubscribed.** `_numberOfProcessingThreads = 2 + cores × 20` = **642** on
+  32 vCPU (`VehicleLocationInferenceServiceImpl:144`) for a CPU-bound particle filter. Running 642
+  runnable threads on 32 cores inflates each task's wall-clock latency ~20× (75 ms → ~2,400 ms) without
+  adding throughput. It is a plain Spring setter with **no system property**, so changing it needs a
+  wiring change.
+- **The backlog accounting is O(n²) and unsynchronized.** `InferenceBacklogThreads` is
+  `_inferenceProcessingThreads.size()` — a plain `ArrayList<Future>` of *every submitted task*, pruned
+  only when it exceeds `MAX_EXPECTED_THREADS = 3000`, via a scan plus O(n) `remove()` per dead entry
+  (`BundleManagementServiceImpl:348-359,546-560`). Past 3,000 the prune runs on **every registration**,
+  i.e. ~500×/s against a 14,600-element list, from 642 threads with no synchronisation. This is
+  plausibly a large part of the missing CPU (74%, not pinned) and it also means **the metric is not a
+  queue depth** — healthy behaviour is a 0–3,000 sawtooth, and values above 3,000 mean the prune can no
+  longer keep up. Read it as a saturation flag, not a queue length.
+
+**Cost, with the fleet held fixed:** near-term (0–5 min) MAE 11 → 25 s at AM and 13 → 28 s at PM;
+ALL 31 → 42 s and 38 → 46 s; 30+ min essentially flat (65 → 66 s). See the §2 fixed-window table.
+Near-term ETAs are almost entirely determined by where the bus is now, which is why a stale anchor hits
+them hardest and long horizons barely at all.
+
+### Fix options, in recommended order
+
+The deficit is only ~6–12%, so a resize is not required to *restore freshness*. But see the note on
+option 1: the cheap fix costs GPS granularity, which is the experiment's independent variable.
+
+> ⚠️ **Corrected 2026-07-30 by the offline replay: `minIntervalSec` 7 → 10 does almost nothing** —
+> 286 → **279 fixes/s (−2.4%)**, still above the ~254–270 ceiling. My original recommendation of 7 → 10
+> would not have fixed this. **The first setting that works is 7 → 12** (236 fixes/s, −17%).
+>
+> The reason is quantization against the 5.6 s inbound cadence. When the rate cap drops a fix, the
+> "last kept" timestamp does not advance, so the next fix is ~11.2 s from it. Any cap between ~6 s and
+> ~11 s therefore admits on the *same* every-other-fix rhythm; only a cap above ~11.2 s forces an extra
+> skip. Hence the cliff between 10 s (279/s) and 12 s (236/s). **Deadband demand falls in steps at
+> multiples of the inbound cadence, not smoothly** — so pick settings from the measured table, never by
+> interpolating.
+
+| # | change | effect | cost / risk |
+|---|---|---|---|
+| 1 | **RECOMMENDED: deadband `minIntervalSec` 7 → 15**, leaving `minMeters=10` and `maxAgeSec=30` unchanged (`run-inference.sh`, restart inference) | 286 → **226 fixes/s**, a 12–17% margin under the ~254–270 ceiling, so the queue drains instead of being capped | free, reversible, no rebuild. **Costs ~2 s of anchor age** (~15 → ~17 s) — see the arithmetic below |
+| 2 | **`oba.shed.maxAgeSec` 50 → 30**, as a guardrail alongside #1 | after #1 shedding should stop firing entirely, so this becomes a pure ceiling — and it should sit at the **parity threshold**: 30 caps the worst case near ~34 s ≈ prod's 32 s, where 50 permits 65 s (worse than prod). This is what stops the goal being breached silently again | free, same restart. **Roughly loss-neutral** — see the note below |
+| 3 | **Cut `numberOfProcessingThreads` 642 → ~64** | removes the ~20× latency amplification (2,400 ms → ~150 ms per fix) and much of the prune cost; raises effective throughput | needs a Spring wiring change (no `-D` hook today). Low risk — throughput is set by cores, not thread count |
+| 4 | **Fix `_inferenceProcessingThreads`** — bound it, synchronise it, or replace it with a counter | removes an O(n²) unsynchronised hot path at ~500 calls/s, and makes `InferenceBacklogThreads` mean something | small code change in `BundleManagementServiceImpl`; genuine latent bug (concurrent `ArrayList` mutation) |
+| 5 | **Resize c7i.8xlarge → c7i.12xlarge** (48 vCPU) — **PREFERRED as of 2026-07-30, cost accepted** | ceiling ~254–270 → **~380–405 fixes/s** if scaling is linear, clearing today's 286/s with ~33% headroom **while keeping the 7 s deadband and the ~15 s anchor age** | **+$521/mo (+50%)** on-demand. Needs a stop/start, so a ~10–20 min off-peak outage window. See §2d |
+
+### The recommendation, against a stated goal of PARITY with prod
+
+**Goal: anchor age ≤ prod's ~32 s** (not "as fresh as possible" — the current project objective is
+parity, which makes this a much easier constraint and buys a lot of headroom).
+
+Anchor age is roughly **half the processing cadence plus transport**, which the pre-regression data pins
+down: a 21.4 s cadence produced a measured 15 s anchor age, so transport ≈ 4.3 s. Applying that:
+
+| `minIntervalSec` | admitted | vs ceiling | cadence/veh | **predicted anchor age** | vs prod's 32 s |
+|---|---|---|---|---|---|
+| 7 *(today, saturated)* | 286/s | **over** | 21.4 s | **69 s actual** — queue dominates | **2× worse** |
+| 10 | 279/s | over (marginal) | 21.7 s | ~15 s | better |
+| 12 | 236/s | under, 7–13% | 24.3 s | ~16.5 s | ~1.9× better |
+| **15 ← recommended** | **226/s** | **under, 12–17%** | 25.1 s | **~17 s** | **~1.9× better** |
+| 20 (with `maxAge` 45) | 173/s | under, 32%+ | 33.5 s | ~21 s | ~1.5× better |
+
+**Why 15 rather than 12.** The freshness difference is 0.4 s, irrelevant against a 32 s target; the
+capacity difference is not. The ceiling is *derived*, not measured, so it may be lower than estimated —
+and under-shooting means staying saturated at 69 s, a total failure of the goal. Buying 12–17% margin
+instead of 7–13% costs 0.4 s. It also absorbs the fleet growth still pending (`BXM18`, `QM32`, ~15
+MTABC vehicles).
+
+**Why not 20, since parity would allow it.** At 20 s the cadence reaches 33.5 s, level with prod, and
+that is where a *different* risk starts: sparser observations degrade the particle filter itself, not
+just freshness. We lack the UTS run data prod uses to disambiguate adjacent trips, so we depend more on
+dense geometry. Trip matching at 98.4% is currently the best result in this work — do not spend it on
+headroom that is not needed.
+
+**Why change only the rate cap.** The other two knobs thin the stream in worse ways:
+
+- **`minMeters` 10 → 15/25 preferentially drops slow-moving buses** — exactly the congested cases whose
+  ETAs are hardest and most valuable — and measurement shows it buys only ~2% more reduction (231 vs 236
+  fixes/s at a 12 s cap). The rate cap thins uniformly in time; the distance test thins selectively by
+  speed. Prefer uniform.
+- **`maxAgeSec` 30 → 45 weakens the failsafe** that keeps stationary buses present in the feed. It saves
+  ~3% of load (failsafe admissions 8% → 4.4%) while letting a parked bus go 45 s with no update, which
+  inflates the anchor-age tail and risks vehicles dropping out of coverage. Bad trade.
+
+**Verify all three of these at the next peak, not just the first:** `InferenceShedFixes` back to **0**;
+anchor age **~15–20 s** (`analyze-anchor-age.py`); and **trip match still ≥98%**, which is the guard
+against having thinned observations too far. If shedding persists, the capacity estimate was optimistic
+and 20 s is the next step. Then re-run the NYCT-only fixed-window comparison: near-term MAE should
+return toward 11–13 s, confirming the diagnosis and unblocking the F2/F3 re-derivation.
+
+#3/#4 remain worth doing afterwards on their own merits — they raise the ceiling at zero infrastructure
+cost, so the *next* fleet increase does not force another cadence cut, and they would allow going back
+toward 7 s if the objective ever changes from matching prod to beating it. #5 stays unneeded.
+
+## 2d. Remedy applied: resized to c7i.12xlarge — DONE 2026-07-30 11:27 EDT
+
+> **Executed.** c7i.8xlarge → **c7i.12xlarge (48 vCPU / 96 GiB)**, in place, EIP and both EBS volumes
+> retained. **Total feed outage: ~1 min 50 s** — far below the 5–12 min estimated. The deadband was left
+> at 7 s deliberately, so the 5 s-ingestion premise is intact.
+>
+> | phase | time (EDT) |
+> |---|---|
+> | graceful stop of OBA units + `docker stop oba-mongo` (exit 0) | ~11:27:00 |
+> | `stop-instances` → `stopped` | 11:27:13 → 11:27:46 (**33 s**) |
+> | `modify-instance-attribute` → `start-instances` → `running` | → 11:28:06 (**53 s** end-to-end) |
+> | inference thread pool created (size **962**) / weights re-applied 20/40/40 | 11:28:39 / 11:28:40 |
+> | feed serving again (HTTP 200) | **11:28:52** |
+> | fleet fully re-converged | 11:34:47 |
+>
+> **Verified after:** `nproc` 48, 92 GiB RAM, all five units active, Mongo up, `/data` intact (8.7 G,
+> both volumes persisted), `oba-weights` re-applied 20/40/40 automatically (HTTP 200), coverage back to
+> **NYCT 98.4% / MTABC 98.0%** with 2,319 vehicles versus 2,320 immediately before, and **position age
+> 19 s median against prod's 43 s**.
+>
+> ⚠️ **Still to confirm: the PM peak (15:00–19:00).** Off-peak was never the problem — at 11:26,
+> pre-resize, anchor age was already a healthy 17 s. The test is whether
+> `InferenceShedFixes` stays at **0** and anchor age stays ~15 s when the fleet reaches ~3,480. Note the
+> thread pool auto-grew to **962** (`2 + 48 × 20`), so the 20× oversubscription and the O(n²)
+> `_inferenceProcessingThreads` prune are both still present and the capacity gain may be sublinear.
+> If shedding returns at peak, do §2c #3/#4 rather than resizing again.
+
+### Original decision rationale (2026-07-30)
+
+**Cost was accepted as not binding, which changes the recommendation.** Resizing is preferable to the
+deadband route because it is the only option that keeps the **5 s ingestion premise** intact: demand
+stays at 286 fixes/s under the current 7 s cap, anchor age returns to ~**15 s** (2× fresher than prod
+rather than merely at parity), no observation density is sacrificed, and the pending fleet additions
+(`BXM18`, `QM32`, remaining MTABC vehicles) plus future picks get absorbed. It also gives Mongo room for
+a larger WiredTiger cache, which should help the historical-component lookups.
+
+**Recommended plan — three steps, never leaving the deployment degraded:**
+
+1. **Now (≈5 min, no feed outage):** apply `minIntervalSec=15` + `shed.maxAgeSec=30` and
+   `systemctl restart oba-inference`. Only `oba-gtfsrt` interrupts the feed, so restarting inference is
+   invisible to consumers (§2b). This keeps **today's PM peak healthy** instead of eating another one.
+2. **Tonight, 02:00–04:00 ET** (`TripUpdateEntities` ~165–315, the daily minimum): resize.
+3. **After verifying:** revert `minIntervalSec` to **7** and `shed.maxAgeSec` to **30** (keep the tighter
+   ceiling), restart inference, and confirm at the next peak.
+
+That ordering also yields a free measurement of scaling behaviour: one peak at 15 s / 32 vCPU and one at
+7 s / 48 vCPU. If cadence-quality tradeoffs are ever revisited, that is exactly the data needed.
+
+**The resize itself** (EIP and EBS persist, so the public hostname does not change):
+
+```bash
+IID=i-0386b6bb8338b2f67
+aws ec2 stop-instances  --instance-ids $IID          # systemd units stop with the OS
+aws ec2 wait instance-stopped --instance-ids $IID
+aws ec2 modify-instance-attribute --instance-id $IID --instance-type c7i.12xlarge
+aws ec2 start-instances --instance-ids $IID
+aws ec2 wait instance-running --instance-ids $IID
+```
+
+`c7i.12xlarge` is offered in our AZ (`us-east-1a`) — verified. Expect **~10–20 min of feed outage**:
+2–4 min for the stop/start plus service startup and the 675 MB bundle load.
+
+**Verify after the restart:** `nproc` = 48; all five units active and Mongo's container up; the feed
+returns on the unchanged EIP; `oba-weights` re-applied 20/40/40 (it is `PartOf` predictions, so it should
+fire automatically — check, since the override resets on every restart); then at the next peak
+`InferenceShedFixes` = 0 and `analyze-anchor-age.py` ≈ 15 s.
+
+**Three things to watch, in priority order:**
+
+- ⚠️ **The thread pool auto-scales with cores** — confirmed at 962 after the resize — `2 + availableProcessors × 20` becomes **962 threads**
+  on 48 vCPU. Oversubscription therefore stays at 20×, and the unsynchronised O(n²)
+  `_inferenceProcessingThreads` prune gets hammered by *more* threads. **That serial bottleneck does not
+  scale with cores**, so the capacity gain may be sublinear — expect somewhere between +25% and +50%
+  rather than a guaranteed +50%. Even at +25% (318–338 fixes/s) demand of 286/s is covered, so the
+  resize should still work; but this is the reason to follow up with §2c #3/#4, which would raise the
+  ceiling further at no extra cost.
+- **Heaps do not need to grow.** The workload is CPU-bound, which is why the c-family was chosen; the
+  current 52 GB of committed heap (inference 30 g, predictions 10 g, gtfsrt 6 g, Mongo WT 6 GB) simply
+  gains headroom on 96 GiB. The one change worth making opportunistically is **Mongo WT cache 6 → 12 GB**,
+  since `AggregateLinkTimes` lookups are on the prediction path.
+- **Consider bundling `predictions.PredictionLevel=NEXT_TRIP`** (§8 #5/#6) into the same window. ETA
+  baselines already have to be re-established because of the anchor regression, so doing both at once
+  costs one re-baseline instead of two — and it removes the F1 rollover artifact permanently. Anchor age
+  and shed rate are unaffected by it, so it does not confound the freshness verification.
+
+### Resize cost
+
+AWS Pricing API, us-east-1, Linux/shared, 730 h/mo:
+
+| option | USD/hr | USD/mo | vs today |
+|---|---|---|---|
+| **c7i.8xlarge on-demand (today)** — 32 vCPU / 64 GiB | 1.428 | **1,042** | — |
+| c7i.12xlarge on-demand — 48 vCPU / 96 GiB | 2.142 | **1,564** | **+521 (+50%)** |
+| c7i.12xlarge, 1-yr No Upfront RI | 1.417 | 1,034 | ≈ today's bill, but a 1-year commitment |
+| c7i.12xlarge, 3-yr No Upfront RI | 0.943 | 688 | −354 |
+
+Two things to note. **There is no intermediate size** — c7i goes 8xlarge (32 vCPU) → 12xlarge (48), so
+the smallest purchasable increment is +50% capacity for +50% cost, when the actual shortfall is ~6–12%.
+That alone argues for tuning first. And the commitment rows are not a like-for-like saving: a 1-yr RI on
+the *current* box would cut today's bill similarly, so the true incremental cost of the resize is ~+50%
+under any consistent pricing model. The deployment is deliberately on-demand/no-commitment today
+(EC2-DEPLOYMENT §9).
+
+> **What lowering the shed threshold does and does not do** — worth being precise, because the intuitive
+> reading is wrong. In steady state every queued fix leaves either processed or discarded, so
+> **discard rate = arrival rate − service rate**, i.e. ~500 − ~470 ≈ **30 fixes/s regardless of the
+> threshold**. (This matches the measurement: observed shed ~16–32/s against a computed ~16–30/s
+> deficit.) The threshold does not control *how many* fixes are dropped — it controls *how long the
+> survivors wait*. So 50 → 25 is approximately **loss-neutral and strictly fresher**, and it slightly
+> *raises* capacity by keeping the backlog (and therefore the O(n²) prune) smaller.
+>
+> **Two things it cannot do.** It cannot get us below ~40 s while saturated — anchor age is
+> `threshold + ~15 s` of inherent AVL transport and deadband holding, so beating prod's 32 s requires
+> #1 or #5, not a smaller threshold. And it does not make the loss harmless: the risk is **observation
+> density**, since a particle filter needs a dense stream to stay converged, and sparser updates are
+> part of what produces direction flips and wrong-trip errors (classes C/D). At ~6% loss that is fine,
+> but it means ETA freshness and trip matching pull in opposite directions here — **verify the
+> trip-match rate (98.4% today) has not fallen before lowering the threshold further.**
+
+**Correction to an earlier reading in this document:** the CPU figure (74%, not pinned) initially
+suggested the bottleneck might not be cores at all. The peak log resolves it — the *thread pool* is
+100% saturated and per-fix latency is 32× its off-peak value, so the system is genuinely at its
+throughput ceiling; the unpinned CPU is explained by the oversubscription and prune overhead above, not
+by spare capacity.
 
 ---
 
@@ -68,25 +466,35 @@ deltas are time-of-day contaminated — only the fixed-window table above is cle
 
 | # | class | size (latest) | nature | root cause | fix |
 |---|---|---|---|---|---|
-| A | MTABC fleet absent | 792 veh, 91 routes | **coverage defect** | no MTABC STIF → no DSC/run data → zero candidate blocks | obtain MTABC STIF, rebuild bundle |
-| B | **route B1 (NYCT) absent** (+ Q84/Q30/Q75 degraded) | 10–15 veh, all day | **coverage defect** | bundle build dropped 87% of B1 trips from the DSC index — GTFS/STIF disagree on non-revenue first/last stops | **fixed & verified locally** (dual-key index; 0 unmatched across all 5 boroughs + whole-MTA); needs a rebuild to deploy |
-| C | same route, different trip | 2.6% of pairs | expected w/o data | no UTS run assignments → 3 of 4 likelihoods flat | TDM crew API / YardTrek |
-| D | direction flips | 0.3% | transient | 135° gate skipped while stationary + DSC direction-blind | same UTS fix; self-corrects |
+| A | ~~MTABC fleet absent~~ | was 792 veh / 91 routes | **coverage defect** | no MTABC STIF → no DSC/run data → zero candidate blocks | **FIXED & DEPLOYED 07-29** — MTABC STIF added, 97.0% coverage |
+| B | ~~route B1 (NYCT) absent~~ (+ Q84/Q30/Q75) | was 10–15 veh, all day | **coverage defect** | bundle build dropped 87% of B1 trips from the DSC index — GTFS/STIF disagree on non-revenue first/last stops | **FIXED & DEPLOYED 07-29** — dual-key index; B1 at 92% |
+| C | same route, different trip | **1.2%** of pairs (was 2.6–3.4%) | expected w/o data | no UTS run assignments → 3 of 4 likelihoods flat | TDM crew API / YardTrek |
+| D | direction flips | 0.4% | transient | 135° gate skipped while stationary + DSC direction-blind | same UTS fix; self-corrects |
 | E | route confusion | 0.01% | noise | shared-corridor DSC is a preference, not a rejection | none needed |
-| F1 | rollover joins | 0.5% of pairs | **measurement artifact** | prod emits current+next TU, we emit current only | join prod's current TU; set `NEXT_TRIP` |
-| F2 | long-horizon "early bias" (local) | median −3…−13 s | **measurement artifact** | prod's position anchor is ~22 s older than ours | none — control for it when measuring |
-| F3 | express long-horizon bias | 30+ min median −67 s | **real engine gap** | thin history on long links | history warm-up; see §6 |
-| G | vehicles only in our feed | 35–50 | benign | prod filters ghost buses; we don't | optional: consume ghostbus feed |
-| H | 1.00 vs 1.82 TripUpdates/vehicle | — | config gap | `PredictionLevel=CURRENT_TRIP` vs prod's `NEXT_TRIP` | one seeded key |
+| F1 | rollover joins | **0.2%** of pairs (was 0.5%) | **measurement artifact** | prod emits current+next TU, we emit current only | join prod's current TU; set `NEXT_TRIP` |
+| F2 | long-horizon "early bias" (local) | 30+ median −22 s *in the controlled stratum* | **was** an artifact; **premise now inverted** | *was* prod's anchor ~22 s older than ours; since 07-29 **ours is ~39 s older** and the bias got deeper, so the old mechanism cannot explain it | **re-derive after §2c is fixed** — the control is confounded by the regression |
+| F3 | express long-horizon bias | 30+ median −18…−21 s, and **+0 s** in the controlled stratum | **unresolved** | thin history on long links (§6) — but the residual that made this "real" is not visible in the 07-30 run | re-measure after §2c; do not act on the current reading |
+| I | **position anchor 4.6× staler than before, and staler than prod's** | 69 s vs 15 s; prod 30–36 s | **real platform regression** | +30% fleet from the 07-29 coverage fix exceeded peak capacity → load-shedding fires → longer effective update interval per vehicle | **§2c** — resize, or widen the deadband; add anchor-age monitoring |
+| G | vehicles only in our feed | 36–55 | benign, **now quantified 07-30** | **two causes, measured:** ~24% are stale records (our publication expiry is 300 s; prod's is **exactly 120 s**, measured as a hard ceiling in their archive) and **~76% are freshly-reporting buses prod suppresses** — assignment/depot filtering we lack, not staleness. Supersedes the earlier "likelier a TTL difference" reading | tighten expiry to 120 s (free, 0.02% collateral) + consume depot rosters off `busSpear`; `simulate-publication-expiry.py` |
+| H | 1.00 vs 1.82 TripUpdates/vehicle | — | config gap | `PredictionLevel=CURRENT_TRIP` vs prod's `NEXT_TRIP` | **needs a code change, not a config key** — see §5 H |
 
-Three of the ten are artifacts of *how we measure*, not of the feed. That distinction is the single
-most important lesson of this work (§7).
+Three of these are artifacts of *how we measure*, not of the feed. That distinction is the single most
+important lesson of this work (§7) — and F2/F3 now show its converse: an artifact explanation can stop
+being true when the platform changes underneath it, so a control has to be re-verified, not inherited.
 
 ---
 
 ## 4. Coverage defects (the only things actually broken)
 
-### A. The entire MTABC fleet is missing
+### A. The entire MTABC fleet was missing — RESOLVED 2026-07-29
+
+> **Resolved.** The MTABC STIF was supplied on 2026-07-29, added to `stif-c6-all/`, and the bundle
+> rebuilt. `gtfs_trips_with_no_stif_match` went **28,845 → 0** (28,845 was exactly MTABC's trip
+> count), matched trips 202,565 → 244,350, sign codes 658 → 881, with **no sign code's count
+> decreasing**. Live coverage is now **97.0%** of prod's MTABC fleet, and only `BXM18`/`QM32` remain
+> absent. No config change was needed — the loader recurses through the STIF directory.
+> The root cause below is retained because it explains the mechanism, and it is the same mechanism
+> that would recur if any future pick ships without a STIF slice.
 
 **Evidence.** 792 MTABC vehicles / 91 routes in prod, **zero** in ours: former private lines
 (Q06–Q115, B100/B103, BX23) and MTABC express (QM/BM/BXM, SIM8/10). Ranges 412 → 850 vehicles by time
@@ -105,7 +513,14 @@ Ruled out: `DscLikelihood` (unknown DSC scores a neutral 1.0), and ingestion (`a
 bypasses the depot filter). MTABC geometry *is* in the spatial index — only the STIF-derived gates kill
 it. **Fix:** obtain the MTABC STIF and rebuild. (Relaxing the two flags is possible but risks accuracy.)
 
-### B. Route B1 (NYCT) — found 2026-07-27, **root-caused on the host 2026-07-28**
+### B. Route B1 (NYCT) — found 07-27, root-caused 07-28, **FIXED & DEPLOYED 07-29**
+
+> **Deployed.** The dual-key matcher shipped on 2026-07-29. Live result: B1 **0% → 92%** (12 of 13
+> vehicles, on 12 distinct trips rather than the old two-stuck-on-one), Q30 and Q75 at **100%**, Q84
+> at 80%, and the per-route coverage gate is silent for the first time — no NYCT route below 20%.
+> The open question below (why prod never had this defect) is **still unanswered** and still worth
+> resolving: if prod's STIF input differs, fixing the input beats carrying this patch.
+
 
 This is the condition the runbook names as alarming: a **NYCT** route in the missing list. It hid
 inside the MTABC route list for three runs.
@@ -441,7 +856,12 @@ refuses to write into the live bundle dir without `ALLOW_LIVE=1`), plus
 
 ## 5. Prediction differences
 
-### C. Same route, different trip — 2.6% (was 3.4% at the prior PM peak)
+### C. Same route, different trip — **1.2% as of 07-30** (2.6% at the 07-29 PM peak, 3.4% before the fixes)
+
+> The dual-key matcher and the MTABC STIF both cut this: more correctly-linked trips in the bundle means
+> fewer wrong-but-adjacent candidates. The mechanism below is unchanged and still sets the floor — it
+> cannot go to zero without UTS run data. The figures in this section are the 07-27 PM measurements,
+> retained because that is where the persistence and per-pair analysis was done.
 
 **Evidence.** 196 of 7,659 pairs. The two engines never disagree between *simultaneous* departures:
 the start-time gap is median 10–15 min (only 3 cases under 1 min). In **137/196** the trip we chose is
@@ -508,10 +928,33 @@ publishes `105500_MISC_837` as a future trip starting 17:35; we already have it 
 `105500_MISC_837`. The join reported a −23 min "error" that is purely in-progress vs not-started.
 **Fix:** restrict the ETA join to prod's current TripUpdate, and/or set `PredictionLevel=NEXT_TRIP`.
 
-**F2 — position-anchor staleness (measurement artifact, and the bulk of the local bias).** Prod's
-VehiclePositions are **~22–25 s older** than ours (prod median 37–50 s vs ours 13–19 s). A prediction
-anchored to where the bus *was* reads later — i.e. we look "early". Cross-tabbing median delta by
-inter-feed position distance × horizon (trip-matched, rollover excluded):
+**F2 — position-anchor staleness (measurement artifact **through 2026-07-28**; premise inverted since
+07-29 — read the box below before using any of this).**
+
+> ⚠️ **This section describes the regime up to 2026-07-28, when prod's anchor was ~22 s older than
+> ours. Since the 07-29 deploy, ours is ~39 s older than prod's (§2c), and the long-horizon bias got
+> *deeper* rather than flipping sign — so the mechanism below cannot be the whole explanation.**
+> The 07-30 control reads, local, median delta by distance × horizon:
+>
+> | local | 0–5 | 5–15 | 15–30 | 30+ |
+> |---|---|---|---|---|
+> | 0–50 m (07-27) | +3 | +2 | +0 | **−3** |
+> | 0–50 m (**07-30**) | +0 | −1 | −6 | **−22** |
+> | 50–150 m (07-30) | −7 | −11 | −15 | −28 |
+> | 150–400 m (07-30) | −15 | −18 | −23 | −39 |
+>
+> Near-term is still ~0 where the feeds agree on position, but the 30+ residual the control used to
+> remove is now **−22 s**; and express in that same stratum is now **+3/+4/+12/+0**, i.e. the F3
+> residual is not visible. **Do not treat either as a new finding.** Under a 69 s anchor the strata
+> stop meaning what they meant: "both feeds within 50 m" now selects disproportionately for slow and
+> stationary buses, since that is where a 39 s anchor gap produces little distance. The control is
+> confounded by the regression it would need to control for. **Re-derive the F2/F3 split once §2c is
+> fixed**, and until then quote no bias attribution from it.
+
+Prod's VehiclePositions **were ~22–25 s older** than ours (prod median 37–50 s vs ours 13–19 s). A
+prediction anchored to where the bus *was* reads later — i.e. we look "early". Cross-tabbing median
+delta by inter-feed position distance × horizon (trip-matched, rollover excluded), **as measured
+2026-07-27**:
 
 | local buses, distance between the two feeds' positions | 0–5 min | 5–15 | 15–30 | 30+ |
 |---|---|---|---|---|
@@ -522,18 +965,29 @@ inter-feed position distance × horizon (trip-matched, rollover excluded):
 
 Where both feeds place the bus within 50 m, the local bias is ~0 at short horizons and −3 to −13 s at
 30+ min (two samples). It appears only as the anchors diverge, and the magnitude matches the mechanism:
-150–400 m is roughly what a bus covers in ~22 s. **This is an artifact in our favour** — our
-predictions are fresher, not faster. A uniformly optimistic engine would show its bias in the
-position-agreeing stratum too, and it doesn't.
+150–400 m is roughly what a bus covers in ~22 s. **In that regime this was an artifact in our favour** —
+our predictions were fresher, not faster. A uniformly optimistic engine would show its bias in the
+position-agreeing stratum too, and it didn't. (Since 07-29 the freshness advantage is gone, so the "in
+our favour" reading no longer applies — §2c.)
 
 Also **ruled out: a deliberate policy difference.** Per-route 30+ min medians are two-sided —
 SIM7 −338 s, SIM1 −218 s, QM63 −109 s at one end, **M11 +94 s, M5 +64 s, B15 +57 s, M4 +38 s** at the
 other. A policy offset would be one-signed.
 
-**F3 — the express residual (the one real engine gap).** At 30+ min: local median −8 s vs
-**express −67 s**, and express stays at −41…−70 s *even in the position-agreeing stratum*, deepening to
-−125 s at 150–400 m. Express MAE 88 → 119 s at a fixed window — the only class not improving. Cause
-is established in §6.
+**F3 — the express residual (was "the one real engine gap"; now unresolved).** As measured 07-27, at
+30+ min: local median −8 s vs **express −67 s**, with express staying at −41…−70 s *even in the
+position-agreeing stratum* and deepening to −125 s at 150–400 m. Express MAE 88 → 119 s at a fixed
+window — the only class not improving. Cause was attributed in §6 (shallow buckets on long links).
+
+**The 07-30 run does not reproduce it.** Express in the position-agreeing stratum is now
+**+3 / +4 / +12 / +0** across horizons, and at the fixed PM window express MAE *improved* 119 → 101 s
+with its median moving −32 → −18 s. The per-route 30+ ordering inverted too: the negative end is now
+Brooklyn/Queens **locals** (B16 −150 s, Q25 −120, B9 −103, Q60 −99) and the most positive route is
+**SIM1C +66 s**, where SIM7/SIM1/QM63 used to sit at the negative extreme. Because the stratification
+is confounded under a 69 s anchor (see the F2 box), this is **not** evidence that the express gap
+closed — it is evidence that the measurement no longer isolates it. §6's history-depth argument stands
+on its own per-link evidence and is unaffected; what is suspended is the *feed-comparison* read of
+express bias. Re-measure after §2c.
 
 ### G / H. Two small known items
 
@@ -542,7 +996,55 @@ TripUpdates either**, and their position age skews old (p90 169 s). Prod filters
 via `bustrek.mta.info/api/ghostbus/records`; we don't consume it. Benign.
 
 **H.** 1.00 vs 1.82 TripUpdates/vehicle is entirely `PredictionLevel` (`CURRENT_TRIP` vs prod's
-`NEXT_TRIP`) — one seeded config key, and fixing it also removes F1.
+`NEXT_TRIP`), and fixing it also removes F1.
+
+> ⚠️ **Corrected 2026-07-30: this is NOT "one seeded config key".** Earlier notes (including this
+> document) called it an XS config change; reading the deployed code on the host disproves that.
+> `PredictionsGeneratorService:271-279` resolves it via
+> `_configService.getConfigurationValueAsString("predictions", "predictions.PredictionLevel",
+> "CURRENT_TRIP")`, and our `_configService` is **`DummyConfigurationServiceImpl`**, whose
+> `getConfigurationValueAsString(...)` **returns the caller's `defaultValue` unconditionally** and whose
+> `setConfigurationValue(...)` has an **empty body**. So the value can never be anything but
+> `CURRENT_TRIP`: there is no system property, no file, and no API that reaches it. The weights are
+> settable only because they have a dedicated `WeightSetterAPI` controller (`/api/weight`) that bypasses
+> the config service entirely — the predictions webapp's only other endpoints are `/cache-purge`,
+> `/cache-historical`, `/cache-recent`, `/release` and `/tdf`.
+>
+> **Re-verified in depth 2026-07-30 (second pass, after challenge). The conclusion holds, and the
+> mechanism is now fully understood:**
+>
+> - The stub is **hard-wired in Spring XML**, not selected by a property:
+>   `application-context-webapp.xml:26` reads
+>   `<bean id="PredictionsConfigurationService" class="...DummyConfigurationServiceImpl" /><!-- local: no TDM -->`.
+>   `git status` on the host clone is clean, so this is the committed state, not a local edit.
+>   `PredictionsGeneratorService` `@Autowired`s that bean. **`-Dtdm.host=` does not influence it.**
+> - **Why the weights *do* work, and this doesn't.** `WeightSetterAPI` never touches the config service —
+>   it calls a dedicated `PredictionsWeightsService.setPredictionWeights()` that sets the values directly
+>   in memory. The config service is only the *initial* source
+>   (`PredictionsWeightsServiceImpl:43-45`, defaults 100/0/0) — which is exactly why the stub yields
+>   100/0/0 and why `oba-weights` has to re-POST after every restart. **There is no equivalent service or
+>   endpoint for `PredictionLevel`**; `RefreshPredictionLevel()` only re-reads the stub.
+> - The only other implementation, `PredictionsConfigurationServiceImpl`, is **TDM-backed** — it
+>   `@Autowired`s `TransitDataManagerApiLibrary` and polls every 5 min.
+>
+> **So there is no flag, property, file, or endpoint that can set it as deployed.** Options:
+>
+> 1. **Make `DummyConfigurationServiceImpl` fall back to system properties** — *recommended*. ~5 lines in
+>    one class, and it unlocks **every** `predictions.*` key via `-D`, not just this one: notably
+>    `minuteIntervalsInDay` (the lever for the weekend-history problem, §6),
+>    `historicalComponentRecordCount`, and `prognosticatorThreadCount`. It would also let the weights come
+>    from `-D` and make the `oba-weights` unit redundant. Best value by a wide margin.
+>    *(While in there: `getConfigurationValueAsBoolean` returns `null` instead of `defaultValue` — a
+>    latent bug worth fixing.)*
+> 2. **Add a `PredictionLevelSetterAPI`** mirroring `WeightSetterAPI` plus a re-apply unit. Runtime
+>    settable without restart, but more code and it only solves this one key.
+> 3. Change the hard-coded default at `PredictionsGeneratorService:273`. One line, but bakes it into the
+>    build and leaves every other key unreachable.
+> 4. Switch the bean to `PredictionsConfigurationServiceImpl` and stand up a TDM-shaped endpoint.
+>    **Not recommended** — it would then govern *all* `predictions.*` keys including the weights,
+>    conflicting with the `oba-weights` path, for no benefit over option 1.
+>
+> All need a **build + deploy** of the predictions webapp, so this is an S, not an XS.
 
 ---
 
@@ -688,7 +1190,7 @@ fill at all** — every day those bundle fixes wait is also a day of lost histor
 
 ## 7. Measurement lessons (apply these before believing any future number)
 
-The biggest risk in this work is attributing a measurement artifact to the engine. Six controls, all
+The biggest risk in this work is attributing a measurement artifact to the engine. Nine controls, all
 learned the hard way:
 
 1. **Compare identical clock windows.** Time of day dominates day-to-day deltas. The live runs said
@@ -700,9 +1202,19 @@ learned the hard way:
 5. **Dedupe repeated snapshots.** 10 s polling re-measures the same link dozens of times; raw counts
    overstated one sample ~30×.
 6. **Control for link duration** when comparing link-level error — short links cannot disagree much.
+7. **Hold the agency fixed across 2026-07-29** (`AGENCY=NYCT`). MTABC joined with zero history *and*
+   matches trips better than NYCT, so a blended number moves for two unrelated reasons at once. This is
+   what made 07-29 read as "NYCT improved" when NYCT had in fact regressed.
+8. **Measure anchor age, not feed age.** `header.timestamp` says when the feed was *published*;
+   `vehicle.timestamp` says how old the evidence behind it is. The first stayed at 5 s while the second
+   went 15 → 69 s (§2c). Every prior run's "we are 2–3× fresher than prod" claim came from the second,
+   and it silently stopped being true.
+9. **Re-verify an inherited control, don't assume it.** F2's artifact explanation was correct when
+   established and false eight days later, because the platform changed underneath it. A control that
+   is not re-measured is an assumption.
 
-Also always check: host load-shedding state (`InferenceShedFixes`; it was **0** during the 07-27 PM
-run, unlike 07-24), bundle pick changes (re-run `verify-parity.py`), and our own config drift.
+Also always check: host load-shedding state (`InferenceShedFixes` — **0 through 07-28, nonzero at every
+peak since 07-29**), bundle pick changes (re-run `verify-parity.py`), and our own config drift.
 
 ---
 
@@ -710,23 +1222,28 @@ run, unlike 07-24), bundle pick changes (re-run `verify-parity.py`), and our own
 
 | # | action | class | blocker | effort |
 |---|---|---|---|---|
-| 1 | **Set `multiCSVLogger` `basePath` + a log4j config, rebuild** → the 4 STIF CSVs name why B1/Q84/Q30 trips were dropped; then fix and rebuild (§4C) | B | none — we own the build | S |
-| 1b | **Add a build gate: per-route DSC coverage ≥90% fails the build** (would have caught all three routes pre-deploy) | B | none | S |
-| 1c | **Script the bundle build** — currently a manual, unscripted, un-CI'd procedure (§4C) | B | none | S |
-| 2 | Obtain **MTABC STIF**, rebuild (792 veh, 91 routes ≈ 20% of fleet) | A | external data | M |
-| 3 | Obtain **UTS run/operator assignments** (TDM crew API / YardTrek S3) | C, D | access grant | M |
-| 4 | Set `predictions.PredictionLevel=NEXT_TRIP` (feed-shape parity; also kills F1) | F1, H | none | XS |
-| 5 | Restrict the ETA join to prod's current TripUpdate | F1 | see note | XS |
-| 6 | Re-measure the weekday A/B **late August**, when ~80% of weekday buckets pass depth 50 | F3 | time | S |
-| 7 | Decide on a coarser weekend bucket key (fold Sat+Sun / wider intervals) — needs its own A/B | F3 | design call | M |
-| 8 | Keep the per-route coverage gate in every run | B | done | — |
-| 9 | **Ground-truth scoring harness** — the only way to answer "who is right" | all | PRODUCTIONIZING §5 | L |
-| 10 | Optional: consume the ghostbus feed to match prod's filtering | G | none | S |
+| **1** | **Restore position freshness: deadband `minIntervalSec` 7 → 15 and `shed.maxAgeSec` 50 → 30** (keep `minMeters=10`, `maxAgeSec=30`; **not** 10 s — measured at −2.4%, ineffective). Predicted anchor age ~17 s vs prod's 32 s, i.e. parity with margin. Anchor age 69 s is costing ~2× near-term ETA MAE and has invalidated the F2/F3 controls; everything ETA-related is blocked behind it. Full justification + verification checklist in §2c | **I**, F2, F3 | none | XS |
+| **1a** | **Resize to c7i.12xlarge in an off-peak window** (§2d) — chosen remedy now that cost is accepted; keeps the 7 s deadband and a ~15 s anchor age. Then revert `minIntervalSec` to 7 | I | off-peak window | S |
+| **1b** | Cut `numberOfProcessingThreads` 642 → ~64, and bound/synchronise `_inferenceProcessingThreads` (O(n²) unsynchronised hot path; also makes `InferenceBacklogThreads` meaningful) | I | small code change | S |
+| **2** | **Publish `PositionAnchorAgeSeconds` to CloudWatch + alarm at 40 s** — i.e. tied to the parity target (prod ~32 s), not an arbitrary number. `FeedStalenessSeconds` is blind to this by construction; a 4.6× regression ran a full day unseen. `monitor.sh` already polls the feed, so this is a few lines | I | none | S |
+| 3 | **Add a build gate: per-route DSC coverage ≥90% fails the build** — still open, and still the thing that would have caught B1 before deploy | B | none | S |
+| 4 | Obtain **UTS run/operator assignments** (TDM crew API / YardTrek S3) | C, D | access grant | M |
+| 5 | Set `PredictionLevel=NEXT_TRIP` (feed-shape parity; also kills F1). **Not a config key** — the stubbed config service ignores it, so this needs a code change + deploy (§5 H lists three options; making the dummy read system properties is the best) | F1, H | none | S |
+| 6 | Restrict the ETA join to prod's current TripUpdate | F1 | see note | XS |
+| 7 | Re-measure the weekday A/B **late August**, when ~80% of weekday buckets pass depth 50 — **only meaningful once #1 is done** | F3 | #1, time | S |
+| 8 | Decide on a coarser weekend bucket key (fold Sat+Sun / wider intervals) — needs its own A/B | F3 | design call | M |
+| 9 | Keep the per-route coverage gate in every run | B | done | — |
+| 10 | **Ground-truth scoring harness** — the only way to answer "who is right" | all | PRODUCTIONIZING §5 | L |
+| 11 | Optional: consume the ghostbus feed to match prod's filtering | G | none | S |
+| ~~—~~ | ~~diagnostics + rebuild / dual-key matcher~~ → **DONE 07-29**, deployed | B | — | — |
+| ~~—~~ | ~~script the bundle build~~ → **DONE**: `build-bundle.sh` (its frozen classpath file should be resolved fresh — §4C) | B | — | — |
+| ~~—~~ | ~~obtain **MTABC STIF** + rebuild~~ → **DONE 07-29**: 97–98% coverage, 0 routes missing | A | — | — |
 
-**Note on #5:** deliberately not applied yet — it would redefine the headline MAE mid-series and break
-comparability with the 07-22 → 07-27 baselines. Cost of leaving it is quantified (0.5% of pairs, <1 s
-of ALL-bucket MAE). Bundle it with the next change that forces a new baseline; use `analyze-bias.py`
-for artifact-free numbers meanwhile.
+**Note on #6:** deliberately not applied yet — it would redefine the headline MAE mid-series and break
+comparability with the 07-22 → 07-27 baselines. Cost of leaving it is quantified (0.5% of pairs, and it
+is down to 0.2% as of 07-30, worth <1 s of ALL-bucket MAE). Bundle it with the next change that forces a
+new baseline — **the §2c freshness fix is exactly that change**, so apply #5 and #6 alongside it and
+re-baseline once.
 
 **Explicitly not recommended:** tuning `ScheduleLikelihood`'s informal precision or the DSC route-match
 ratios to raise agreement with prod. That optimises toward prod's answers rather than correctness, and
@@ -736,17 +1253,25 @@ the remaining disagreement classes are small and self-correcting.
 
 ## 9. What is still open
 
+- **Restoring position freshness (§2c)** — the one item blocking everything ETA-related. Which remedy
+  (resize vs deadband) is a cost decision that has not been made.
+- **Whether the ETA regression fully reverses when freshness is restored.** The attribution is strong
+  (near-term-only damage, dated to the deploy, fleet held fixed, config unchanged) but it is inferred
+  from correlation across days, not from an intervention. Restoring freshness *is* the experiment.
+- **The F2 / F3 split** — has to be re-derived, since the 07-30 control is confounded by the very
+  staleness it would need to remove. Currently the local 30+ residual survives the control (−22 s) and
+  the express one does not appear at all; both readings are suspect.
 - **Which engine is more accurate** at long horizons — unanswerable by feed comparison; needs ground
-  truth. Everything above measures *agreement*, and prod's own numbers carry the F2 staleness artifact.
-- **B1: which loader condition dropped the trips.** The defect is pinned to the bundle's DSC index
-  (§4B) and every input verified clean, but the specific drop reason needs the build's four STIF
-  diagnostic CSVs, which were not retained. One rebuild answers it.
+  truth. Everything above measures *agreement*.
 - **Does the read path use the same UTC hour convention** as the write path? Almost certainly yes
   (same clock), but the predictions repo is not cloned locally, so it was not code-verified. Re-check
   at the DST change.
-- **Express trajectory** — regressing at a fixed window, and Fri-vs-Mon is a residual confounder.
-  Needs a Mon-vs-Mon window.
-- **Weekend accuracy** — structurally slow to warm; needs the §8 #7 decision.
+- **Express trajectory** — 88 → 119 → 101 s at the fixed PM window, but the last point is inside the
+  stale-anchor regime, so the trend is not readable yet. Still wants a Mon-vs-Mon window.
+- **Weekend accuracy** — structurally slow to warm; needs the §8 #8 decision.
+- **`BXM18` / `QM32`** — the two MTABC routes still absent, plus ~15 MTABC vehicles.
+- **Why prod covers B1 when our bundle build didn't** (§4B) — the dual-key matcher fixed our symptom;
+  the upstream difference is still unexplained and would be better to fix at the input.
 
 ---
 
@@ -758,7 +1283,11 @@ the remaining disagreement classes are small and self-correcting.
 | `probe-coverage.py` | coverage/freshness probe **+ per-route NYCT coverage gate** |
 | `analyze-discrepancies.py` | classifies diff-trip pairs and big ETA deltas by shape |
 | `analyze-bias.py` | strips rollover joins, stratifies bias by position distance × horizon |
-| `compare-archives.py` | replays S3 archives for the **same clock window** across dates |
+| `compare-archives.py` | replays S3 archives for the **same clock window** across dates; **`AGENCY=NYCT` holds the fleet fixed across 07-29** |
+| `analyze-coverage-delta.py` | **(new 07-30)** splits the vehicle-count difference into ours-only vs prod-only and characterises each (age, agency, route spread, presence in the other feed's TripUpdates) — so the delta can be attributed instead of guessed |
+| `analyze-anchor-age.py` | **(new 07-30)** position-anchor age at a fixed window across dates — separates *feed* age from *data* age; `AGENCY=` supported |
+| `simulate-publication-expiry.py` | **(new 07-30)** tests a candidate feed-expiry cutoff against both archives — measures prod's actual cutoff, and the benefit/collateral of matching it |
+| `simulate-deadband.py` | **(new 07-30)** replays the archived raw BusTech AVL through an exact port of `passesDeadband` to measure what load a candidate setting admits — lets deadband/capacity changes be tested offline, with no host access and without waiting for a peak |
 | `analyze-history-depth.py` | history-depth A/B (deep vs shallow buckets) |
 | `make-history-fill-chart.py` | regenerates the history-fill chart |
 | `verify-parity.py` | static-GTFS id parity gate (re-run per bundle pick) |

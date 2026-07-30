@@ -455,3 +455,185 @@ Then add a per-route DSC-coverage build gate.
 endpoints and consumption sites — `FINDINGS-SUMMARY.md` §5b. Our deployed stubs are
 `DummyVehiclePulloutService`, `DummyUnassignedVehicleServiceImpl` (inference) and
 `DummyConfigurationServiceImpl` (predictions).
+---
+
+# Re-run 2026-07-29 17:28–17:31 EDT — PM PEAK, first run with the full network (full output: `feed-comparison-2026-07-29-post-mtabc.md`)
+
+First comparison after deploying both coverage fixes (dual-key STIF matcher + MTABC STIF). 13,207
+vehicle-pairs; ~220k matched stop-predictions. ~3 h post-restart, so caches were warm.
+
+| metric | 07-24 PM pk | 07-27 PM pk | **07-29 PM pk** |
+|---|---|---|---|
+| same trip_id | 96.5% | 97.1% | **98.0%** |
+| same route, diff trip | 3.4% | 2.6% | 1.6% |
+| different route | 2 | 1 | **0** |
+| ETA MAE — ALL | 41 | 37 | 49 — but **36 for NYCT alone** |
+| ETA MAE — 30+ min | 70 | 59 | 79 — **55 for NYCT alone** |
+| express MAE | 108 | 97 | 131 (sample doubled: MTABC express included) |
+| vehicles ours / prod | 2538 / 3406 | 2596 / 3414 | **3356 / 3398** |
+| routes only in MTA | 93 | 92 | **0** |
+
+**Findings:**
+
+1. **Network parity reached.** Zero routes missing (was 92), 3,356 vehicles vs prod's 3,398 (99%),
+   NYCT 98.4% / MTABC 97.0% coverage. Trip matching hit **98.0% at PM peak** — the best figure recorded
+   in any run, and previously PM peak was the *worst* window (96.5%).
+2. **The ETA "regression" is entirely the new MTABC fleet, which has zero history.** By agency:
+   NYCT MAE 36 s overall / 55 s at 30+ min, versus MTABC 86 s / 149 s. NYCT actually **improved** on
+   07-27 PM peak (37 → 36, 59 → 55). Report the two agencies separately until MTABC warms, or the
+   blend will mask NYCT's progress.
+3. **Express MAE 97 → 131 is a composition change, not a degradation** — the express sample nearly
+   doubled (15k → 26k deltas) as MTABC's QM/BM/BXM joined with no link history.
+4. Direction flips 0.4%, same-route/diff-trip down to 1.6% (from 2.6%), route confusion **0**.
+5. Two ~40 s feed outages were the whole cost of the deploy (38 s and 44 s, both measured, gtfsrt-only).
+
+**Caveats:** this is a step change, so rows before 07-29 are not comparable on coverage or blended ETA.
+Two MTABC routes (`BXM18`, `QM32`) and 15 MTABC vehicles remain absent. The fleet is ~36% larger, so
+the deadband/shedding thresholds still need validating across a full PM peak.
+
+> **Superseded in part by the 07-30 run below.** That last caveat was the right one: the larger fleet
+> did break the peak thresholds. Findings 2 and 3 above were derived from *live* runs at different
+> windows; measured at a fixed clock window with the agency held fixed, NYCT did **not** improve on
+> 07-29 — it regressed (MAE 38 → 46 s, near-term 13 → 28 s). See "Correcting the 07-29 reading" below.
+
+---
+
+# Re-run 2026-07-30 08:47–08:51 EDT — AM PEAK, day 1 of the full network (full output: `feed-comparison-2026-07-30.md`)
+
+Coverage held everywhere and trip matching set a record — and the run surfaced a **new, unrelated
+regression: our position anchors are now staler than prod's**, which is the first time that has been
+true and which inverts the assumption the F2 bias control was built on.
+
+| metric | 07-27 AM pk | 07-29 PM pk | **07-30 AM pk** |
+|---|---|---|---|
+| same trip_id | 96.7% | 98.0% | **98.4%** (best recorded) |
+| same route, diff trip | 3.0% | 1.6% | **1.2%** |
+| ETA MAE — ALL | 37 | 49 | 44 |
+| ETA MAE — 0-5 min | 18 | 23 | 23 |
+| ETA MAE — 30+ min | 59 | 79 | 72 |
+| ETA median — 30+ min | −18 | −21 | **−28** |
+| express MAE | 76 | 131 | 104 |
+| vehicles ours / prod | 2596 / 3414 | 3356 / 3398 | 3290 / 3321 |
+| routes only in MTA | 90 | **0** | **0** |
+| **our position age (median)** | ~13–16 s | (not sampled) | **65–74 s** |
+| prod position age (median) | ~37 s | ~37 s | 30–36 s |
+
+Coverage probe: NYCT **97.7–98.3%**, MTABC **98.0%**, per-route gate **silent** across 234 routes
+(worst: QM64 67% and S54 67%, both on prod fleets of 3–6, i.e. noise). B1 is gone from the gap list.
+`B84` appeared in our feed but not prod's — prod simply had no B84 bus running in the window, the
+benign direction of that check.
+
+## 1. The headline: coverage and trip matching are genuinely good
+
+98.4% same-`trip_id` is the best figure in the series, at a peak window, and same-route/different-trip
+fell to 1.2% (from 2.6–3.4% before the fixes). Holding both the clock window and the agency fixed —
+NYCT only, 08:45, ~2,560 vehicles both days — matching went **97.4% → 97.8%**, so this is a real gain
+from the dual-key matcher and not a composition effect. Rollover joins also fell to **0.2%** of pairs
+(17 of 9,428), from 0.5%.
+
+## 2. The new problem: our position anchor aged 4.6× overnight
+
+`probe-coverage.py` reported our position age at **72 s median / 89 s p90** against prod's **32 s** —
+reversing the 2–3× freshness advantage that has held in every prior run. Four consecutive probes
+confirmed it (65–74 s). `analyze-bias.py` §4 measures the same thing independently: **prod VP age −
+our VP age = −39 s** (local), where it was **+22 to +25 s** on 07-27.
+
+Replaying the archives at one fixed window across days (`analyze-anchor-age.py`, new) dates it exactly
+to the 07-29 deploy, and **NYCT-only** — so it is not the new MTABC fleet arriving with a slower
+cadence:
+
+| window | 07-24 | 07-27 | 07-28 | 07-29 | 07-30 |
+|---|---|---|---|---|---|
+| 08:45, NYCT only (~2,600 veh) | – | 16 s | 15 s | 15 s | **69 s** |
+| 17:25, both agencies | 15 s | 15 s | 15 s | **69 s** | – |
+| feed *header* age, same windows | 5–6 s | 5 s | 4–5 s | 5 s | 6 s |
+
+MTABC's own anchor age on 07-30 is **68 s** — identical to NYCT's, confirming it is platform-wide.
+
+**The distinction that matters: the feed is published on time; the data inside it is old.** Header age
+never moved (4–6 s), which is exactly what `FeedStalenessSeconds` alarms on — so the existing
+monitoring is structurally blind to this failure, and a 4.6× freshness regression ran for a day
+unnoticed.
+
+## 3. Cause: the coverage win pushed the box past its peak capacity
+
+Config drift is ruled out — verified on the host, the flags are still
+`deadband minMeters=10 minIntervalSec=7 maxAgeSec=30` and `shed maxAgeSec=50`, and inference last
+restarted at the deploy itself (07-29 18:16 UTC). What changed is load, from CloudWatch at AM peak
+(08:00 hour):
+
+| | 07-27 | 07-28 | 07-29 | **07-30** |
+|---|---|---|---|---|
+| `TripUpdateEntities` | 2,602 | 2,651 | 2,671 | **3,482** (+30%) |
+| `CPUUtilization` avg | 54% | 51% | 57% | **74%** |
+| `InferenceBacklogThreads` avg | 1,397 | 1,545 | 1,490 | **14,994** (max 15,244) |
+| `InferenceShedFixes` per 2 min | **0** | **0** | **0** | **3,869** (max 4,612) |
+
+`InferenceShedFixes` had been **exactly 0 for the entire recorded history** and now fires at every
+peak (2,745/interval at 07-29 PM, 3,869 at 07-30 AM), going quiet overnight when load falls. So
+load-shedding is working precisely as designed — it bounds the queue (~15k, well under the 25k alarm)
+and prevents OOM — but the lag it settles at now exceeds prod's freshness. Dropping a vehicle's
+queued fixes lengthens that vehicle's *effective* update interval, which is what the anchor age
+measures.
+
+## 4. What the staleness costs, with the fleet held fixed
+
+NYCT only, identical clock windows, ~1–2 M stop-prediction deltas per row (so MTABC's cold history
+cannot be the explanation — the fleet is the same one, at the same size, on both dates):
+
+| window / date | ALL | 0-5 min | 5-15 min | 15-30 min | 30+ min | local | express | same trip |
+|---|---|---|---|---|---|---|---|---|
+| **08:45** 07-29 (pre) | −9 / 31 | −2 / **11** | −6 / 19 | −12 / 30 | −24 / 53 | −9 / 28 | −24 / 83 | 97.4% |
+| **08:45** 07-30 (post) | −16 / 42 | −6 / **25** | −12 / 31 | −17 / 40 | −33 / 64 | −15 / 39 | −40 / 107 | 97.8% |
+| **17:25** 07-24 (pre) | −6 / 37 | −2 / **13** | −4 / 21 | −8 / 35 | −16 / 60 | −5 / 32 | −29 / 88 | 96.6% |
+| **17:25** 07-27 (pre) | −5 / 38 | −2 / **13** | −4 / 21 | −6 / 33 | −13 / 65 | −4 / 30 | −32 / 119 | 97.2% |
+| **17:25** 07-29 (post) | −15 / 46 | −6 / **28** | −11 / 34 | −16 / 42 | −26 / 66 | −15 / 41 | −18 / 101 | 96.9% |
+
+Two things stand out. **The near-term bucket roughly doubled at both windows** (11 → 25, 13 → 28) —
+the one movement the runbook names as unambiguously alarming, and the signature you would predict from
+a stale anchor, since a 0–5 min ETA is almost entirely determined by where the bus is now. And **the
+30+ bucket barely moved** (65 → 66 at PM), so this is a freshness regression, not a link-time one.
+
+## 5. Correcting the 07-29 reading
+
+The 07-29 entry recorded "NYCT improved 37 → 36 s" and "record 98.0% trip match" from live runs. At a
+fixed window with the agency held fixed, neither survives:
+
+- **NYCT ETA regressed on 07-29**, 38 → 46 s overall and 13 → 28 s near-term. The live comparison
+  looked flat only because it compared a 17:28 sample against a 17:10 one from a different day.
+- **The 98.0% was the MTABC blend.** MTABC matches better than NYCT (07-30 AM: 98.3% both agencies vs
+  97.8% NYCT only) because its longer headways leave fewer adjacent departures to confuse. NYCT-only
+  PM matching went 97.2% → 96.9%.
+
+The MTABC-cold-history explanation for the blended ETA rise was *also* true — both effects were
+present on 07-29, and the live method could not separate them. This is measurement lesson #1 landing
+a second time, plus a new one: **hold the agency fixed across 2026-07-29.**
+
+## 6. What this does to the F2 bias control
+
+F2 explained the long-horizon "early bias" as prod's anchor being ~22 s older than ours. That premise
+is now false — ours is ~39 s older than prod's — yet the bias is still negative and *deeper*
+(30+ median −28 s, the most negative recorded). So the mechanism as written cannot be the whole story.
+The distance-stratified control (`analyze-bias.py` §5), local, median delta by inter-feed position
+distance × horizon:
+
+| local | 0-5 | 5-15 | 15-30 | 30+ |
+|---|---|---|---|---|
+| 0–50 m (07-27) | +3 | +2 | +0 | **−3** |
+| 0–50 m (**07-30**) | +0 | −1 | −6 | **−22** |
+| 50–150 m | −7 | −11 | −15 | −28 |
+| 150–400 m | −15 | −18 | −23 | −39 |
+| 400 m+ | −26 | −41 | −45 | −103 |
+
+The near-term rows are still ~0 where the feeds agree on position, but the 30+ residual that the
+control used to remove is now **−22 s**. Meanwhile **express in the position-agreeing stratum is now
++3/+4/+12/+0** — the −41…−70 s express residual that F3 called "the one real engine gap" is not
+visible in this run. Route-level 30+ medians have inverted with it: worst are now Brooklyn/Queens
+locals (B16 −150 s, Q25 −120, B9 −103, Q60 −99) and the most positive is **SIM1C +66 s**, where
+express (SIM7/SIM1/QM63) used to hold the negative end.
+
+**Treat all of §6 as unresolved rather than as a new finding.** Under a 69 s anchor the strata no
+longer mean what they meant: "the two feeds agree within 50 m" now selects disproportionately for
+slow and stationary buses, because that is where a 39 s anchor difference produces little distance.
+The control is confounded by the very regression it is trying to control for, so the F2/F3 split
+cannot be re-derived until freshness is restored.

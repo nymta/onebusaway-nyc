@@ -20,6 +20,16 @@ already consume is the same feed MTA ingests).
 published pipeline effectively works off **~30 s** updates. Finer input should yield more accurate inferred
 positions and travel times → better predictions, *even at identical prediction weights*.
 
+> ⚠️ **Magnitude correction, 2026-07-30 — the hypothesis is directionally right but "6×" is not what we
+> actually run.** The source rate is confirmed at **5.6 s/bus** (measured off the `bustechGps` archive) and
+> it is shared with MTA. But **our own ingestion deadband down-samples it before inference ever sees it**:
+> effective sampling is **~11 s for a moving bus**, ~30 s for a stationary one, **21 s fleet-mean**, and the
+> published anchor age is **~16 s vs MTA's ~39–48 s**. So the realised advantage is roughly **1.4× on
+> cadence and 2.4× end-to-end — not 6×**. Any prediction of the effect size in §4 should be scaled
+> accordingly, and the §5 control arm should down-sample from *our actual* sampling rate, not from 5 s.
+> Full detail and the measured table: `FINDINGS-SUMMARY.md` §1a. Recovering the true 5.6 s rate is now
+> plausible on the resized host (`minIntervalSec` 7 → 5 ≈ 405 fixes/s) but is untested and marginal.
+
 **Important nuance (confirmed in the code — see §4):** the size of that 5 s-vs-30 s advantage is **coupled to
 the weighting** (§3). Under the default **schedule-only** weights (100/0/0), finer GPS only improves the
 *near-term* part of a prediction (how far the bus is into its current inter-stop segment); the downstream
@@ -29,7 +39,7 @@ link travel times, whose accuracy is exactly what finer GPS improves. So the two
 weighting** — must be tested together, and to *attribute* a difference to ping frequency we should run a
 **control arm that down-samples our own feed to 30 s** (see §5).
 
-A second-order effect that's always on: the **inference** particle filter also gets 6× more observations, so
+A second-order effect that's always on: the **inference** particle filter also gets more observations (**~2–3× prod's, not 6×** — see the correction above), so
 map-matching/positioning converges faster and tracks tighter regardless of weights.
 
 ---

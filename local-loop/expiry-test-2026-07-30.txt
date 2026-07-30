@@ -1,0 +1,28 @@
+windows: 08-45, 08-50
+  2026-07-30 08-45: ours 28 snaps, prod 13 snaps
+  2026-07-30 08-50: ours 29 snaps, prod 13 snaps
+
+56 paired snapshots
+
+=== 1. What cutoff does prod appear to use? (their published position ages) ===
+   median 33 s | p90 47 s | p99 57 s | p99.9 114 s | MAX 145 s
+   prod vehicles older than: 120s=133 (0.071%), 180s=0 (0.000%), 300s=0 (0.000%)
+   READ: a hard ceiling with ~nothing beyond it IS prod's expiry.
+
+=== 2. Our two populations, by age ===
+   shared with prod  n=184807  median  63 s | p90   79 s | p99  100 s | max  296 s
+   OURS-ONLY         n=  2847  median  68 s | p90  194 s | p99  288 s | max  300 s
+
+=== 3. Simulated expiry: benefit vs cost ===
+| cutoff | ours-only removed | ours-only remaining | SHARED wrongly removed |
+|---|---|---|---|
+| 60 s | 2010 of 2847 (**71%**) | 837 (29% of today) | 113751 (61.55% of shared) |
+| 90 s | 676 of 2847 (**24%**) | 2171 (76% of today) | 3622 (1.96% of shared) |
+| 120 s | 592 of 2847 (**21%**) | 2255 (79% of today) | 416 (0.23% of shared) |
+| 150 s | 489 of 2847 (**17%**) | 2358 (83% of today) | 158 (0.09% of shared) |
+| 180 s | 343 of 2847 (**12%**) | 2504 (88% of today) | 104 (0.06% of shared) |
+| 240 s | 135 of 2847 (**5%**) | 2712 (95% of today) | 30 (0.02% of shared) |
+| 300 s | 0 of 2847 (**0%**) | 2847 (100% of today) | 0 (0.00% of shared) |
+
+A cutoff is worth shipping where 'ours-only removed' is high and 'shared wrongly removed'
+is ~0. Per snapshot, divide counts by 56.
