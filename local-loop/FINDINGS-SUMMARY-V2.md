@@ -370,7 +370,7 @@ B1 and MTA Bus problems presented before they were fixed.
 
 | fix | addresses | cost | blocked on |
 |---|---|---|---|
-| **Tighten our publication expiry from 300 s to 120 s** to match BusTech prod's measured cutoff | A2 — ~24% of population A, at 0.02% collateral | small code change | **nothing — do this one anyway**, it removes genuinely stale output |
+| ~~Tighten our publication expiry from 300 s to 120 s~~ | A2 — ~24% of population A | **DONE 2026-07-30**: live at 120 s, matching BusTech prod's measured cutoff. The position-age tail fell from 300 s to 124 s, 13–19 stale buses are dropped per refresh cycle, and buses we publish that prod does not fell from ~55 to ~37 | — |
 | **Consume depot rosters** to filter yard, deadhead and out-of-service buses | A1 — the remaining ~76% | small integration | **nothing** — these already reach us on the radio message bus we subscribe to, no new access needed. **Now the higher-value of the two** |
 | Obtain the **crew/run assignment feed** | B1, B2 — the bulk of population B | integration | **MTA access grant** (already the top ask in §5) |
 | Obtain **depot pull-out data** | B2 | integration | **MTA access grant** (cross-account read, currently denied) |
