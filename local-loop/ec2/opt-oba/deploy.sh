@@ -29,7 +29,10 @@ case "$ACTION" in
     # onebusaway-nyc-gtfsrt (the feed-building library) must be listed explicitly: there is no -am here,
     # so a change to it would otherwise not be rebuilt and the webapp would link the stale jar from ~/.m2.
     run_oba "export JAVA_HOME=$JH PATH=$JH/bin:\$PATH MAVEN_OPTS=-Xmx4g; cd /opt/oba/onebusaway-nyc && mvn -B -q -pl onebusaway-nyc-queue-broker,onebusaway-nyc-vehicle-tracking,onebusaway-nyc-vehicle-tracking-webapp,onebusaway-nyc-gtfsrt,onebusaway-nyc-gtfsrt-webapp -DskipTests -Dlicense.skip=true install"
-    run_oba "export JAVA_HOME=$JH PATH=$JH/bin:\$PATH MAVEN_OPTS=-Xmx4g; cd /opt/oba/onebusaway-nyc-predictions && mvn -B -q -pl onebusaway-nyc-predictions-webapp -DskipTests -Dlicense.skip=true install"
+    # Same trap as above: -pl without -am builds only what is listed, so onebusaway-nyc-predictions-common
+    # has to be named or a change to it is silently dropped and the webapp links the stale jar. When that
+    # jar is missing a class the Spring context references, predictions fails to start at all.
+    run_oba "export JAVA_HOME=$JH PATH=$JH/bin:\$PATH MAVEN_OPTS=-Xmx4g; cd /opt/oba/onebusaway-nyc-predictions && mvn -B -q -pl onebusaway-nyc-predictions-common,onebusaway-nyc-predictions-webapp -DskipTests -Dlicense.skip=true install"
     echo "== restart services =="
     systemctl restart oba-broker oba-inference oba-predictions oba-gtfsrt
     sleep 20
