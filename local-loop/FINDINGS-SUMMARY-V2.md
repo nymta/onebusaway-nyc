@@ -24,22 +24,25 @@ root-cause detail, code citations, and the measurement methodology live in
 **Yes — the deployment is comparable to production, and the remaining differences are understood.**
 
 Our instance runs the same codebase off the same live bus-radio feed as production, and independently
-produces predictions for the same fleet. Comparing the two feeds directly:
+produces predictions for the same fleet. Measured at PM peak on 2026-07-30 after the day's changes,
+over 223,000 matched stop predictions:
 
 | | our instance | BusTech prod | verdict |
 |---|---|---|---|
-| routes covered | **all of them** | — | **at parity** — 0 routes missing from ours at AM peak |
-| buses tracked | 3,290 at AM peak | 3,321 | **99%** |
-| **buses on the same scheduled trip** | — | — | **98.7%** agreement |
-| **predictions within 1 minute of BusTech prod's** | — | — | **85%** |
-| **predictions within 3 minutes** | — | — | **98%** |
-| systematic optimism / pessimism | — | — | **none** — typical difference a few seconds either way |
-| age of GPS behind each prediction | **19 s** | 43 s | we are **~2× fresher** |
+| routes covered | **all of them** | — | **at parity** — 0 routes in prod's feed missing from ours |
+| buses tracked | **3,274** | 3,273 | **100%**; 98.6% of ours are in prod's too |
+| **buses on the same scheduled trip** | — | — | **97.9%** agreement |
+| **predictions within 1 minute of prod's** | — | — | **81%** |
+| **predictions within 3 minutes** | — | — | **97%** |
+| for a bus due within 5 minutes | — | — | **98% within a minute**, 16 s average difference |
+| systematic optimism / pessimism | — | — | **none** — typical difference −6 s |
+| age of GPS behind each prediction | **18 s** | 39–47 s | we are **~2.4× fresher** |
+| prediction sets published per bus | **1.87** | 1.87 | **at parity** since 2026-07-30 (was 1.00 vs 1.86) |
 
-The three material gaps are all **missing input data, not defects in the engine**: we do not have
-MTA's crew-assignment feed, we have 9 days of accumulated travel-time history where production has
-years, and one feed-shape setting still differs. Each is quantified in §4 with what it would take to
-close.
+**The two material gaps that remain are both missing input data, not defects in the engine:** we do not
+have MTA's crew-assignment feed, and we have 9 days of accumulated travel-time history where production
+has years. The third — a feed-shape difference that left us publishing 36% fewer predictions — was
+**closed on 2026-07-30**. Each is quantified in §4 with what it would take to close.
 
 ---
 
@@ -96,6 +99,28 @@ measured over an identical clock window with the fleet held constant:
 | within 5 minutes | 99% |
 
 **Typical difference: about 5 seconds. Average difference: about 38 seconds.**
+
+> **Updated 2026-07-30, after the feed-shape change.** The figures above were measured while we published
+> only each bus's current trip — i.e. across 64% of production's output (§4.3). We now publish the next
+> trip as well, at parity, so the comparison spans **1.87× as many predictions**, including the hardest
+> kind (long-horizon, dependent on when a bus finishes its current trip). Settled at PM peak over
+> 223,000 matched predictions:
+>
+> | | within 1 min | within 3 min | average difference |
+> |---|---|---|---|
+> | all predictions | **81%** | **97%** | 45 s |
+> | bus due in 0–5 min | **98%** | 100% | **16 s** |
+> | 5–15 min | 93% | 100% | 26 s |
+> | 15–30 min | 83% | 98% | 40 s |
+> | 30+ min | 63% | 93% | 76 s |
+>
+> **So nearly doubling what we publish cost about four points on the headline, and near-term agreement
+> improved** — 98% within a minute against 94–96% before. (An earlier reading of 64% was taken minutes
+> after the restart while the system was still converging; it is not the steady state.)
+>
+> **Still outstanding: a clean *fixed-window* baseline.** Cross-day ETA comparison is invalid across
+> either of today's changes — the anchor-age regime this morning and the feed shape this afternoon — so
+> the confounder-free series restarts tomorrow with the feed shape held constant.
 
 **Agreement is strongest where riders actually care** — for a bus arriving in the next 5 minutes, our
 prediction is within a minute of BusTech prod's **99%** of the time. It loosens the further ahead the prediction
@@ -168,7 +193,7 @@ production", and they do not yet support "as accurate as" or "more accurate than
 |---|---|---|---|---|---|
 | 4.1 | **No crew / run-assignment feed** | 1.1% of buses put on an adjacent departure; 0.2% direction flips | small, bounded | access to MTA's TDM crew API | **MTA access grant** |
 | 4.2 | **9 days of travel-time history** (production has years) | long-range predictions (30+ min) weaker: 65 s average difference vs 13 s near-term | moderate, shrinking | time; largely self-resolving | nothing — improves weekly |
-| 4.3 | **We publish ~36% fewer predictions than production** — current trip only, where production also covers each bus's next trip | riders get no estimate from us for a bus still finishing its previous trip; production gives one | **larger than it looks** — see below | small code change | our own backlog |
+| ~~4.3~~ | ~~We publish ~36% fewer predictions than production~~ | — | **CLOSED 2026-07-30**: NEXT_TRIP enabled. 1.87 prediction sets and ~17.5 stops per set, both matching production exactly | done | — |
 | 4.4 | **Peak-load capacity verification** | unverified since this morning's resize | unknown until measured | one measurement at PM peak | ~4 hours |
 | 4.5 | **Several production data feeds we don't consume** | cancelled trips, ghost-bus filtering, occupancy, depot rosters, depot pull-out | mostly cosmetic; two affect accuracy | access grants + integration | **MTA access grants** |
 | 4.6 | **2 MTA Bus routes still absent** (`BXM18`, `QM32`), possibly a third (`SIM8`, seen absent once — unconfirmed), plus ~15 buses | 2–3 routes out of roughly 250 | very small | schedule-data investigation | our own backlog |
@@ -284,9 +309,15 @@ Comparing the two feeds bus-by-bus (`analyze-coverage-delta.py`, midday 2026-07-
 
 | | count | their position age | in the other feed's predictions? |
 |---|---|---|---|
-| in both feeds | 2,298 | ours 16 s / BusTech prod 39 s | — |
-| **ours only** | 42 | median 16 s but **p90 219 s, max 303 s** — a distinct stale tail absent from the shared baseline | **95% absent from BusTech prod's too** |
-| **BusTech prod only** | 39 | median 40 s, **max only 65 s** | — |
+| in both feeds | 3,094 | ours 19 s / BusTech prod 31 s | — |
+| **ours only** | 48 | median 21 s, p90 34 s, **max 129 s** — now *matching* the shared baseline | **88% absent from BusTech prod's too** |
+| **BusTech prod only** | 39 | median 33 s, **max 139 s** | — |
+
+**Re-measured 2026-07-30 PM peak, after the 120 s expiry went live, and two things changed.** The
+ours-only stale tail is gone (it was p90 219 s, max 303 s), so **staleness is now exhausted as an
+explanation** — what remains are normally-reporting buses prod suppresses. And prod-only **fell from ~85
+at this morning's peak to ~39**: that ~46 was convergence lag from the capacity overload, now resolved by
+the resize, which isolates the crew-data floor at ~39.
 
 **Scale first:** each population is about **1.5% of the fleet**, and because they are similar in size they
 nearly cancel in the totals. That is why the headline "3,290 vs 3,321 buses" at AM peak looks tidier than
