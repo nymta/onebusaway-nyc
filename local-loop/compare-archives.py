@@ -14,7 +14,12 @@ Files are 5-minute buckets named by their start minute (00-00, 00-05, ...).
 Usage:
     python3 compare-archives.py 2026-07-24 17-45 [n_windows]     # one date
     python3 compare-archives.py 2026-07-24,2026-07-27 17-45 3    # compare dates, same window
+    AGENCY=NYCT python3 compare-archives.py ...                  # restrict to one agency
 Snapshots are paired across feeds by GTFS-RT header.timestamp (nearest within PAIR_TOL_S).
+
+Set AGENCY=NYCT (or MTABC) whenever a comparison window straddles 2026-07-29: MTABC entered our
+feed that day with zero prediction history, so a blended MAE mixes a real platform change with the
+arrival of a cold-history fleet. Holding the agency fixed separates the two.
 """
 import base64, gzip, io, json, os, statistics, subprocess, sys, time
 from collections import Counter, defaultdict
@@ -28,6 +33,7 @@ PAIR_TOL_S = 10          # max header.timestamp skew when pairing our snapshot w
                          # (prod dedupes to a ~23 s effective cadence, so some skew is unavoidable;
                          #  the same tolerance on both dates keeps cross-day comparisons fair)
 EXPRESS_PREFIXES = ("SIM", "BXM", "QM", "BM", "X")
+AGENCY = os.environ.get("AGENCY")        # None = both; "NYCT" or "MTABC" to hold the fleet fixed
 
 
 def s3_get(prefix, date, window):
@@ -73,13 +79,20 @@ def is_express(route_id):
     return route_id.upper().startswith(EXPRESS_PREFIXES)
 
 
+def agency_of(vehicle_id):
+    """Both feeds label vehicles `MTABC_xxxx` or `MTA NYCT_xxxx`; norm() drops that, so read it first."""
+    return "MTABC" if vehicle_id.startswith("MTABC") else "NYCT"
+
+
 def parse_trip_updates(msg):
     out = defaultdict(list)
     for e in msg.entity:
         if not e.HasField("trip_update"):
             continue
         tu = e.trip_update
-        veh = norm(tu.vehicle.id) if tu.vehicle.id else None
+        if not tu.vehicle.id or (AGENCY and agency_of(tu.vehicle.id) != AGENCY):
+            continue
+        veh = norm(tu.vehicle.id)
         stops = {}
         for stu in tu.stop_time_update:
             t = stu.arrival.time if stu.HasField("arrival") and stu.arrival.time else (
@@ -89,8 +102,7 @@ def parse_trip_updates(msg):
         rec = dict(trip=norm(tu.trip.trip_id), route=norm(tu.trip.route_id),
                    direction=tu.trip.direction_id if tu.trip.HasField("direction_id") else None,
                    stops=stops)
-        if veh:
-            out[veh].append(rec)
+        out[veh].append(rec)
     for recs in out.values():
         recs.sort(key=lambda r: min(r["stops"].values()) if r["stops"] else float("inf"))
     return dict(out)
@@ -108,7 +120,9 @@ def delta_stats(deltas):
     return dict(n=n, median=statistics.median(a), mean=statistics.fmean(a),
                 mae=statistics.fmean(abs(d) for d in a),
                 p10=a[int(0.10 * n)], p90=a[min(n - 1, int(0.90 * n))],
-                w60=pct(sum(1 for d in a if abs(d) <= 60), n))
+                w30=pct(sum(1 for d in a if abs(d) <= 30), n),
+                w60=pct(sum(1 for d in a if abs(d) <= 60), n),
+                w180=pct(sum(1 for d in a if abs(d) <= 180), n))
 
 
 def compare_window(date, windows):
@@ -189,6 +203,7 @@ def report(results):
     p()
     p("- generated %s ; delta convention **ours − prod, seconds** (positive = we predict LATER)" %
       time.strftime("%Y-%m-%d %H:%M:%S %Z"))
+    p("- fleet: **%s**" % (AGENCY if AGENCY else "both agencies (NYCT + MTABC)"))
     p("- snapshots paired by GTFS-RT `header.timestamp` within %d s; prod polls deduped by header ts" % PAIR_TOL_S)
     p()
     p("## Volume")
@@ -225,6 +240,28 @@ def report(results):
             s = delta_stats(r["pooled_class"].get(c, []))
             cells.append("%+.0f / %.0f" % (s["median"], s["mae"]) if s else "–")
         p("| %s | %s |" % (r["date"], " | ".join(cells)))
+    p()
+    p("## Agreement rate — share of stop predictions within N of prod (the plain-English metric)")
+    p()
+    p("| date | within 30 s | within 1 min | within 3 min | within 5 min |")
+    p("|---|---|---|---|---|")
+    for r in results:
+        s = delta_stats(r["pooled"].get("ALL", []))
+        p("| %s | %.0f%% | **%.0f%%** | **%.0f%%** | %.0f%% |"
+          % (r["date"], s["w30"], s["w60"], s["w180"],
+             pct(sum(1 for d in r["pooled"]["ALL"] if abs(d) <= 300), s["n"]))
+          if s else "| %s | – |" % r["date"])
+    p()
+    p("### Agreement rate by how far ahead the prediction looks")
+    p()
+    p("| date | horizon | avg difference | within 1 min | within 3 min |")
+    p("|---|---|---|---|---|")
+    for r in results:
+        for b in ("0-5 min", "5-15 min", "15-30 min", "30+ min"):
+            s = delta_stats(r["pooled"].get(b, []))
+            if s:
+                p("| %s | %s | %.0f s | **%.0f%%** | %.0f%% |"
+                  % (r["date"], b, s["mae"], s["w60"], s["w180"]))
     p()
     return "\n".join(lines) + "\n"
 

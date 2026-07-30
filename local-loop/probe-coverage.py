@@ -48,16 +48,25 @@ def main():
     both = set(ours) & set(mta)
     mta_only = Counter(v.rsplit("_", 1)[0] for v in mta if v not in ours)
     ours_only = [v for v in ours if v not in mta]
-    nyct_mta = sum(1 for v in mta if v.startswith("MTA NYCT"))
+    def agency(v):
+        return "MTABC" if v.startswith("MTABC") else "NYCT"
+    per_agency = {}
+    for a in ("NYCT", "MTABC"):
+        mta_a = {v for v in mta if agency(v) == a}
+        ours_a = {v for v in ours if agency(v) == a}
+        per_agency[a] = (len(mta_a & ours_a), len(mta_a), len(ours_a))
     print(time.strftime("%Y-%m-%d %H:%M:%S %Z"))
     print("ours: %d vehicles (header age %.0fs, pos age median %.0fs / p90 %.0fs)" % (len(ours), oh, om, op))
     print("MTA:  %d vehicles (header age %.0fs, pos age median %.0fs / p90 %.0fs)" % (len(mta), mh, mm, mp))
     print("overlap: %d  |  ours-only: %d" % (len(both), len(ours_only)))
     print("MTA-only by agency: %s" % dict(mta_only))
-    if nyct_mta:
-        print("NYCT coverage: %.1f%% of MTA's NYCT fleet" % (100.0 * len(both) / nyct_mta))
-    print("(expected: MTABC-only ≈ several hundred until the MTABC-STIF bundle rebuild; "
-          "NYCT coverage ≥97%%; our pos ages ~2-3x fresher than MTA's)")
+    # coverage must be computed per agency: dividing the whole overlap by MTA's NYCT-only
+    # fleet overstates it (and exceeded 100% once MTABC coverage landed).
+    for a, (ov, n_mta, n_ours) in per_agency.items():
+        if n_mta:
+            print("%-6s coverage: %5.1f%% of MTA's %s fleet  (%d of %d; we track %d)"
+                  % (a, 100.0 * ov / n_mta, a, ov, n_mta, n_ours))
+    print("(expected: both agencies ≥97%%; our pos ages ~2-3x fresher than MTA's)")
     route_gate(ours, mta)
 
 
