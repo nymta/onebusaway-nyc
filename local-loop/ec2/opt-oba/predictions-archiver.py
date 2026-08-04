@@ -77,7 +77,15 @@ class HourlyArchive:
         self.json_path = path
         self.json_file = path.open("a", encoding="utf-8")
         self.line_count = 0
-        LOG.info("opened archive %s (append=%s)", path, path.exists() and path.stat().st_size > 0)
+        if path.exists() and path.stat().st_size > 0:
+            with path.open("r", encoding="utf-8") as existing:
+                self.line_count = sum(1 for line in existing if line.strip())
+        LOG.info(
+            "opened archive %s (append=%s, lines=%d)",
+            path,
+            path.exists() and path.stat().st_size > 0,
+            self.line_count,
+        )
 
     def append(self, feed_message: gtfs_realtime_pb2.FeedMessage) -> Path | None:
         now = datetime.now(timezone.utc)
@@ -128,8 +136,14 @@ class HourlyArchive:
         LOG.info("closed hour %s: %d lines -> %s", finished_key, finished_lines, zip_path.name)
         return zip_path
 
-    def close(self) -> list[Path]:
+    def close(self, finalize: bool = True) -> list[Path]:
         zip_paths: list[Path] = []
+        if not finalize:
+            if self.json_file is not None:
+                self.json_file.close()
+                self.json_file = None
+            LOG.info("shutdown without finalizing partial hour %s (%d lines)", self.hour_key, self.line_count)
+            return zip_paths
         if self.line_count > 0 and self.json_path is not None:
             zip_path = self.rotate(next_hour_key=None)
             if zip_path is not None:
@@ -253,8 +267,11 @@ def run() -> int:
             LOG.info("stats: %d messages this session, %d lines this hour", msg_count, archive.line_count)
             last_stats = now
 
-    LOG.info("shutting down; finalizing open hour")
-    for zip_path in archive.close():
+    if stop:
+        LOG.info("shutting down on signal; leaving partial hour on disk (no upload)")
+    else:
+        LOG.info("shutting down; finalizing open hour")
+    for zip_path in archive.close(finalize=not stop):
         try:
             upload_zip(zip_path)
         except Exception as exc:
