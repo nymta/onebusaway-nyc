@@ -100,6 +100,10 @@
         </dependency>
     </dependencies>
 
+    <properties>
+        <oba.crew.service.class>org.onebusaway.nyc.transit_data_federation.impl.tdm.OperatorAssignmentServiceImpl</oba.crew.service.class>
+    </properties>
+
     <!-- TODO These are duplicated in several pom.xml files. Need to refactor out. -->
     <profiles>
         <profile>
@@ -241,6 +245,7 @@
                  <gtfs.editor.host>gtfs-editor.dev.obanyc.com</gtfs.editor.host>
                  <vehicle.pipo.service>DummyVehiclePulloutService</vehicle.pipo.service>
                  <unassigned.vehicle.service>DummyUnassignedVehicleServiceImpl</unassigned.vehicle.service>
+                 <oba.crew.service.class>org.onebusaway.nyc.vehicle_tracking.impl.crew.S3UtsOperatorAssignmentServiceImpl</oba.crew.service.class>
           </properties>
         </profile>
         <profile>

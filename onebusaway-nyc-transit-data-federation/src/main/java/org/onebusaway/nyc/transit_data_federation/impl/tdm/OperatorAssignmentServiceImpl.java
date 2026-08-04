@@ -33,8 +33,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
-import org.springframework.stereotype.Component;
-
 import java.util.Calendar;
 import java.util.Collection;
 import java.util.Date;
@@ -55,7 +53,6 @@ import javax.annotation.PreDestroy;
  * @author jmaki
  *
  */
-@Component
 public class OperatorAssignmentServiceImpl implements OperatorAssignmentService {
 
   private static Logger _log = LoggerFactory.getLogger(VehicleAssignmentServiceImpl.class);
