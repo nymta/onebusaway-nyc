@@ -1,0 +1,15 @@
+[Unit]
+Description=OBA-NYC predictions S3 archiver (ZMQ :5568 -> queuePredictions hourly zips)
+After=network-online.target oba-predictions.service
+Wants=network-online.target
+Requires=oba-predictions.service
+
+[Service]
+User=oba
+ExecStart=/opt/oba/run-predictions-archiver.sh
+Restart=always
+RestartSec=15
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

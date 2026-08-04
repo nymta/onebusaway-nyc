@@ -12,11 +12,12 @@ live only in `~oba/.ssh` on the host and are deliberately excluded.
 | repo path | host path | role |
 |---|---|---|
 | `opt-oba/env-common.sh` | `/opt/oba/env-common.sh` | shared env + `gp()` (SSM param fetch) |
-| `opt-oba/run-{broker,inference,predictions,gtfsrt}.sh` | `/opt/oba/` | service launchers (invoked by the systemd units) |
+| `opt-oba/run-{broker,inference,predictions,gtfsrt,predictions-archiver}.sh` | `/opt/oba/` | service launchers (invoked by the systemd units) |
+| `opt-oba/predictions-archiver.py` | `/opt/oba/predictions-archiver.py` | ZMQ :5568 → hourly `queuePredictions_*.zip` → S3 |
 | `opt-oba/set-weights.sh` | `/opt/oba/set-weights.sh` | reads SSM `/oba/predictions/weights`, POSTs `/api/weight` |
 | `opt-oba/deploy.sh` | `/opt/oba/deploy.sh` | GitHub-Action target (modes `deploy` / `set-weights`) |
 | `opt-oba/monitor.sh` | `/opt/oba/monitor.sh` | emits `OBA/Prod` CloudWatch metrics (run by the timer) |
-| `systemd/oba-*.service`, `oba-monitor.timer` | `/etc/systemd/system/` | units (Restart=always; ordered broker→inference→predictions→gtfsrt) |
+| `systemd/oba-*.service`, `oba-monitor.timer` | `/etc/systemd/system/` | units (Restart=always; ordered broker→inference→predictions→gtfsrt→archiver) |
 | `nginx/nginx.conf` | `/etc/nginx/nginx.conf` | minimal http config (no stock server) |
 | `nginx/conf.d/oba-gtfsrt.conf` | `/etc/nginx/conf.d/oba-gtfsrt.conf` | GET-only allowlist reverse proxy (:80 → :8083) |
 | `bundle/bundle-wholeMTA.xml` | `/data/bundle-src/wholeMTA/bundle-wholeMTA.xml` | whole-MTA bundle-builder config (6 GTFS + NYCT STIF) |
@@ -29,7 +30,13 @@ live only in `~oba/.ssh` on the host and are deliberately excluded.
 2. Install toolchain (Corretto 11, Maven, git, Docker, nginx); clone the two repos into `/opt/oba` via read-only deploy keys; start `mongo:4.4`.
 3. Drop these files into place, `chmod +x /opt/oba/*.sh`.
 4. Build the bundle (`FederatedTransitDataBundleCreatorMain` + `bundle-wholeMTA.xml`) into `/data/oba-bundle`.
-5. `systemctl daemon-reload && systemctl enable --now oba-broker oba-inference oba-predictions oba-gtfsrt oba-monitor.timer nginx`.
+5. `systemctl daemon-reload && systemctl enable --now oba-broker oba-inference oba-predictions oba-gtfsrt oba-predictions-archiver oba-monitor.timer nginx`.
+
+### Predictions S3 archiver
+- **Source:** internal ZMQ predictions stream (`127.0.0.1:5568`, topic `time`) — not the public `/tripUpdates` feed.
+- **Output:** hourly `queuePredictions_YYYY-MM-DD_HH-00-00.zip` (NDJSON inside), uploaded to `s3://mtalirr/oba-ec2-predictions/` by default.
+- **Credentials:** optional SSM params `/oba/predictions/s3-archive/access_key_id` and `.../secret_access_key`; otherwise the instance profile / default AWS chain.
+- **Local-only test:** set `OBA_ARCHIVER_UPLOAD=false` in `run-predictions-archiver.sh` and inspect `/data/predictions-archive/`.
 
 ## Current tuning captured (this commit)
 - inference `-Xmx30g` + ingestion deadband `minMeters=10 / minIntervalSec=7 / maxAgeSec=30` ("7 s-while-moving"; widened from 5 s on 2026-07-22) + stale-fix load-shedding `oba.shed.maxAgeSec=50` — `run-inference.sh`
