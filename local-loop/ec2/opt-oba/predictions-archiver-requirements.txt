@@ -1,0 +1,3 @@
+pyzmq
+gtfs-realtime-bindings
+protobuf

@@ -12,11 +12,12 @@ live only in `~oba/.ssh` on the host and are deliberately excluded.
 | repo path | host path | role |
 |---|---|---|
 | `opt-oba/env-common.sh` | `/opt/oba/env-common.sh` | shared env + `gp()` (SSM param fetch) |
-| `opt-oba/run-{broker,inference,predictions,gtfsrt}.sh` | `/opt/oba/` | service launchers (invoked by the systemd units) |
+| `opt-oba/run-{broker,inference,predictions,gtfsrt,predictions-archiver}.sh` | `/opt/oba/` | service launchers (invoked by the systemd units) |
+| `opt-oba/predictions-archiver.py` | `/opt/oba/predictions-archiver.py` | ZMQ :5568 → hourly `queuePredictions_*.zip` → S3 |
 | `opt-oba/set-weights.sh` | `/opt/oba/set-weights.sh` | reads SSM `/oba/predictions/weights`, POSTs `/api/weight` |
 | `opt-oba/deploy.sh` | `/opt/oba/deploy.sh` | GitHub-Action target (modes `deploy` / `set-weights`) |
 | `opt-oba/monitor.sh` | `/opt/oba/monitor.sh` | emits `OBA/Prod` CloudWatch metrics (run by the timer) |
-| `systemd/oba-*.service`, `oba-monitor.timer` | `/etc/systemd/system/` | units (Restart=always; ordered broker→inference→predictions→gtfsrt) |
+| `systemd/oba-*.service`, `oba-monitor.timer` | `/etc/systemd/system/` | units (Restart=always; ordered broker→inference→predictions→gtfsrt→archiver) |
 | `nginx/nginx.conf` | `/etc/nginx/nginx.conf` | minimal http config (no stock server) |
 | `nginx/conf.d/oba-gtfsrt.conf` | `/etc/nginx/conf.d/oba-gtfsrt.conf` | GET-only allowlist reverse proxy (:80 → :8083) |
 | `bundle/bundle-wholeMTA.xml` | `/data/bundle-src/wholeMTA/bundle-wholeMTA.xml` | whole-MTA bundle-builder config (6 GTFS + NYCT STIF) |
@@ -29,7 +30,33 @@ live only in `~oba/.ssh` on the host and are deliberately excluded.
 2. Install toolchain (Corretto 11, Maven, git, Docker, nginx); clone the two repos into `/opt/oba` via read-only deploy keys; start `mongo:4.4`.
 3. Drop these files into place, `chmod +x /opt/oba/*.sh`.
 4. Build the bundle (`FederatedTransitDataBundleCreatorMain` + `bundle-wholeMTA.xml`) into `/data/oba-bundle`.
-5. `systemctl daemon-reload && systemctl enable --now oba-broker oba-inference oba-predictions oba-gtfsrt oba-monitor.timer nginx`.
+5. `systemctl daemon-reload && systemctl enable --now oba-broker oba-inference oba-predictions oba-gtfsrt oba-predictions-archiver oba-monitor.timer nginx`.
+
+### Predictions S3 archiver (`predictions-archiver.py`)
+
+Reproduces prod's `queuePredictions` historical archive from our own instance, so the two can be
+compared offline hour-for-hour.
+
+- **Source:** the internal ZMQ predictions stream (`127.0.0.1:5568`, topic `time`), **not** the public
+  `/tripUpdates` feed. A passive `zmq.SUB`, so it cannot slow or drop anything upstream.
+- **Per message:** parse the last frame as a GTFS-RT `FeedMessage`, normalise stop ids, append one JSON
+  line to `/data/predictions-archive/queuePredictions_<UTC hour>.json`. Records are
+  `incrementality=DIFFERENTIAL`, so a consumer must replay and merge them to get a snapshot.
+- **Hourly rotation:** on the first message of a new UTC hour, zip to
+  `queuePredictions_YYYY-MM-DD_HH-00-00.zip` (prod's layout) and upload to
+  `s3://mtalirr/oba-ec2-predictions/`.
+- **stopId normalisation:** the stream emits per-agency stop ids (`MTA NYCT_401964`, `MTABC_501531`)
+  where prod's archive uses one `MTA_<id>` namespace — the only format difference between the two.
+  `normalize_stop_ids()` re-prefixes to `OBA_ARCHIVER_STOP_ID_AGENCY` (default `MTA`; empty = verbatim).
+  Lossless, since the numeric ids are one global namespace, and it also stops the 581 stops served by
+  both an NYCT and an MTA Bus route being published under two different ids.
+- **Restart safety:** on `SIGTERM` it skips the zip/upload and leaves the partial hour on disk; the next
+  start re-opens it in append mode. That hour mixes conventions if the stop-id setting changed —
+  restart early in an hour and treat it as suspect.
+- **Credentials:** optional SSM params `/oba/predictions/s3-archive/{access_key_id,secret_access_key}`;
+  otherwise the instance profile (`oba-nyc-ec2-role`, inline policy `oba-s3-predictions-archive-write`).
+- **Health:** `journalctl -u oba-predictions-archiver` logs a stats line every
+  `OBA_ARCHIVER_LOG_STATS_SEC` (60 s). **Local-only test:** `OBA_ARCHIVER_UPLOAD=false`.
 
 ## Current tuning captured (this commit)
 - inference `-Xmx30g` + ingestion deadband `minMeters=10 / minIntervalSec=7 / maxAgeSec=30` ("7 s-while-moving"; widened from 5 s on 2026-07-22) + stale-fix load-shedding `oba.shed.maxAgeSec=50` — `run-inference.sh`

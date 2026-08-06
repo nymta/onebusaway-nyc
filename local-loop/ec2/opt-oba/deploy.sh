@@ -40,6 +40,14 @@ case "$ACTION" in
     install -m 755 "$SRC/opt-oba/predictions-archiver.py" /opt/oba/predictions-archiver.py
     install -m 755 "$SRC/opt-oba/run-predictions-archiver.sh" /opt/oba/run-predictions-archiver.sh
     install -m 644 "$SRC/systemd/oba-predictions-archiver.service" /etc/systemd/system/oba-predictions-archiver.service
+    echo "== predictions archiver host prereqs =="
+    mkdir -p /data/predictions-archive
+    chown oba:oba /data/predictions-archive
+    if ! runuser -u oba -- python3 -m pip --version >/dev/null 2>&1; then
+      dnf install -y python3-pip
+    fi
+    runuser -u oba -- python3 -m pip install --user -q pyzmq gtfs-realtime-bindings protobuf 2>/dev/null || \
+      python3 -m pip install -q pyzmq gtfs-realtime-bindings protobuf
     systemctl daemon-reload
     systemctl enable oba-predictions-archiver.service
     echo "== restart services =="

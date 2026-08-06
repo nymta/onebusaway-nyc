@@ -53,6 +53,8 @@ PREDICTIONS predictions-webapp :8082  → writes observed link times to Mongo (L
   │  PUB GTFS-RT "time" (bind :5568) ─┬─► inference loop-back consumer (feeds predictions into the TDS)
   │                                   └─► GTFS-RT app timeInputQueue
 GTFS-RT app gtfsrt-webapp :8083  (builds TripUpdates/VehiclePositions from the TDS, cached ~10 s)
+  │
+PREDICTIONS ARCHIVER predictions-archiver  (SUB :5568 → hourly queuePredictions_*.zip → S3)
   ▼
 nginx :80  (GET-only allowlist reverse proxy) ──► public internet
 ```
@@ -80,7 +82,7 @@ All app ports (8081/8082/8083, broker 5566/5567, predictions-time 5568, Mongo 27
 
 - **EC2:** `i-0386b6bb8338b2f67` (`oba-nyc-prod`, **c7i.12xlarge** 48 vCPU/96 GB, Amazon Linux 2023). **EIP 52.70.255.34.** 30 GB gp3 root + **500 GB gp3** data volume at `/data` (Mongo + bundle; `DeleteOnTermination=false`).
 - **Security group** `sg-0fca012b2afe2a1ee`: inbound **:80 from 0.0.0.0/0** only. Everything else closed.
-- **IAM:** instance profile `oba-nyc-ec2-profile` / role `oba-nyc-ec2-role` (SSM core + read `/oba/*` + write `/oba/predictions/weights` + read the S3 bundle bucket). Deploy role `oba-nyc-gha-deploy` (GitHub OIDC → `ssm:SendCommand` on this instance).
+- **IAM:** instance profile `oba-nyc-ec2-profile` / role `oba-nyc-ec2-role` (SSM core + read `/oba/*` + write `/oba/predictions/weights` + read the S3 bundle bucket + write `s3://mtalirr/oba-ec2-predictions/*` via inline policy `oba-s3-predictions-archive-write`). Deploy role `oba-nyc-gha-deploy` (GitHub OIDC → `ssm:SendCommand` on this instance).
 - **SSM Parameter Store:** `/oba/rabbitmq/*` (feed creds — SecureString user/pass), `/oba/predictions/weights` = `20/40/40`.
 - **S3:** `oba-nyc-bundles-032610139471` (bundle transfer: `2026Jun_Manhattan_C6/`, `wholeMTA-C6-src/`).
 - **Repos** (push to `nymta` only): `nymta/onebusaway-nyc` @ `rsen/ec2-productionize-gtfs-rt`; `nymta/onebusaway-nyc-predictions` @ `rsen/local-gps-predictions`. Cloned on the host under `/opt/oba` via per-repo read-only deploy keys.
@@ -91,14 +93,15 @@ All app ports (8081/8082/8083, broker 5566/5567, predictions-time 5568, Mongo 27
 
 Host `/opt/oba` (user `oba`): the two repo clones, wrapper scripts `run-{broker,inference,predictions,gtfsrt}.sh`, `set-weights.sh`, `deploy.sh`, `monitor.sh`, `env-common.sh`. **A committed snapshot of all host config (scripts, units, nginx, bundle config) lives in [`local-loop/ec2/`](ec2/).**
 
-**systemd units** (Restart=always): `oba-broker` → `oba-inference` → `oba-predictions` → `oba-gtfsrt`, plus oneshot `oba-weights` (PartOf predictions) and **`oba-monitor.timer`** (every 2 min → CloudWatch, see §8). Mongo runs as the `oba-mongo` Docker container (`mongo:4.4`, WT cache 6 GB, bound 127.0.0.1). `nginx` is a system service.
+**systemd units** (Restart=always): `oba-broker` → `oba-inference` → `oba-predictions` → `oba-gtfsrt` → `oba-predictions-archiver`, plus oneshot `oba-weights` (PartOf predictions) and **`oba-monitor.timer`** (every 2 min → CloudWatch, see §8). Mongo runs as the `oba-mongo` Docker container (`mongo:4.4`, WT cache 6 GB, bound 127.0.0.1). `nginx` is a system service.
 
 - **Deploy:** GitHub Action `.github/workflows/deploy.yml` (`workflow_dispatch`, modes `deploy` | `set-weights`) → OIDC role → `aws ssm send-command` runs `/opt/oba/deploy.sh`. `deploy.sh deploy [<main-ref> [<predictions-ref>]]` git-pulls/checks out both repos, rebuilds broker + vehicle-tracking(+webapp) + gtfsrt(+webapp) + predictions-common(+webapp), restarts, smoke-checks.
 - **⚠️ Restart the WHOLE chain, in dependency order. Never restart `oba-gtfsrt` alone.** Its broker subscription does not survive a solo restart: the service comes back up and logs a listening ReadThread on :5567, but publishes **0 entities indefinitely** while inference stays healthy — so nothing looks broken except the feed. Skipping the upstream units to avoid re-converging the fleet therefore costs far more downtime than the full restart it was meant to avoid (~2 min plus re-convergence). `deploy.sh` already does the full chain; do not hand-optimise it.
 - **Tune weights:** `deploy.sh set-weights S H R` (validates sum=100, updates the SSM param, live-POSTs) — no restart.
 - **Tune the deadband:** edit `-Doba.deadband.*` in `/opt/oba/run-inference.sh`, `systemctl restart oba-inference` (no rebuild). Widen `minMeters`→15 or `minIntervalSec`→7 to shed load; lower for finer cadence.
 - **Tune load-shedding:** edit `-Doba.shed.maxAgeSec` in `/opt/oba/run-inference.sh` + `systemctl restart oba-inference`. Lower (e.g. 30 s) → tighter freshness cap + more shedding; `0` disables it.
-- **Resize instance:** stop → `modify-instance-attribute --instance-type` → start (EBS + EIP persist). **Re-tune JVM heaps** in the `run-*.sh` for the new RAM.
+- **Predictions S3 archiver:** `oba-predictions-archiver` runs `predictions-archiver.py`, a passive ZMQ `SUB` on `:5568` (topic `time`) that writes each differential `FeedMessage` as one JSON line, rotates on the UTC hour, and uploads `queuePredictions_YYYY-MM-DD_HH-00-00.zip` to `s3://mtalirr/oba-ec2-predictions/` — byte-compatible with BusTech's `s3://obanyc-historical-predictions/`, so the two archives compare hour-for-hour. Stop ids are re-prefixed to prod's single `MTA_` namespace (`OBA_ARCHIVER_STOP_ID_AGENCY`, default `MTA`), the only format difference between them. Optional SSM creds: `/oba/predictions/s3-archive/{access_key_id,secret_access_key}`. **Safe to restart on its own** — it touches no feed and appends to the partial hour rather than losing it, the one exception to the full-chain rule above. Details in [`local-loop/ec2/README.md`](ec2/README.md).
+- **Resize instance:** stop → `modify-instance-attribute --instance-type` → start (EBS + EIP persist, so the hostname is unchanged; ~2 min of feed outage). **Stop the OBA units and `docker stop oba-mongo` first** so Mongo closes cleanly — it holds the only copy of the prediction history. Heaps need not change (the workload is CPU-bound); size Mongo's WT cache to the new RAM.
 - **Refresh the bundle** (new pick): upload GTFS+STIF → S3, pull to `/data/bundle-src`, author `bundle-*.xml`, build with `FederatedTransitDataBundleCreatorMain`, move the new bundle into `/data/oba-bundle`, archive the old one, restart.
 - **Interactive admin:** `aws ssm start-session --target i-0386b6bb8338b2f67` (needs the session-manager-plugin locally) or scripted `aws ssm send-command`.
 
