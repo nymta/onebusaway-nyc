@@ -49,7 +49,16 @@ public abstract class AbstractFeedMessageService implements FeedMessageService {
 
     public static final int DEFAULT_REFRESH_INTERVAL_SECONDS = 10;
 
+    /**
+     * Publication age cut-off in seconds: a vehicle whose last update is older is left out of the feed.
+     * Default 0 = disabled, following the default-off convention of the ingestion deadband and
+     * stale-fix shedding.
+     */
+    public static final String MAX_VEHICLE_AGE_PROPERTY = "oba.feed.maxVehicleAgeSec";
+
     private int _refreshIntervalSeconds = DEFAULT_REFRESH_INTERVAL_SECONDS;
+
+    private long _maxVehicleAgeMillis = 0L;
 
     private volatile FeedMessage _cachedMessage = null;
 
@@ -59,8 +68,24 @@ public abstract class AbstractFeedMessageService implements FeedMessageService {
         _refreshIntervalSeconds = seconds;
     }
 
+    /** Seconds; 0 or negative disables the cut-off. */
+    public void setMaxVehicleAgeSeconds(int seconds) {
+        _maxVehicleAgeMillis = seconds > 0 ? seconds * 1000L : 0L;
+    }
+
     @PostConstruct
     public void init() {
+        if (_maxVehicleAgeMillis == 0L) {
+            try {
+                setMaxVehicleAgeSeconds(Integer.parseInt(System.getProperty(MAX_VEHICLE_AGE_PROPERTY, "0").trim()));
+            } catch (NumberFormatException e) {
+                _log.warn("{} is not an integer; publication age cut-off stays disabled", MAX_VEHICLE_AGE_PROPERTY);
+            }
+        }
+        if (_maxVehicleAgeMillis > 0L) {
+            _log.info("{}: omitting vehicles whose last update is older than {} s ({})",
+                    getClass().getSimpleName(), _maxVehicleAgeMillis / 1000, MAX_VEHICLE_AGE_PROPERTY);
+        }
         _scheduler = Executors.newSingleThreadScheduledExecutor();
         _scheduler.scheduleWithFixedDelay(this::refresh, 0, _refreshIntervalSeconds, TimeUnit.SECONDS);
     }
@@ -154,20 +179,46 @@ public abstract class AbstractFeedMessageService implements FeedMessageService {
 
     public Collection<VehicleStatusBean> getAllVehicles(TransitDataService tds, PresentationService ps, long time) {
         List<VehicleStatusBean> vehicles = new ArrayList<VehicleStatusBean>();
+        int nStale = 0;
         for (AgencyWithCoverageBean bean : tds.getAgenciesWithCoverage()) {
             String agency = bean.getAgency().getId();
             ListBean<VehicleStatusBean> lb = tds.getAllVehiclesForAgency(agency, time);
             for (VehicleStatusBean vsb : lb.getList()) {
-                if (includeVehicle(tds, ps, vsb, time)) {
+                if (isStale(vsb, time)) {
+                    nStale++;
+                } else if (includeVehicle(tds, ps, vsb, time)) {
                     vehicles.add(vsb);
                 }
             }
         }
+        if (nStale > 0) {
+            _log.info("{}: omitted {} vehicle(s) with an update older than {} s",
+                    getClass().getSimpleName(), nStale, _maxVehicleAgeMillis / 1000);
+        }
         return vehicles;
+    }
+
+    /**
+     * True when the vehicle's last update predates the cut-off. Judged on getLastUpdateTime(),
+     * the same value the feeds publish as their entity timestamp, so a consumer never sees an entity
+     * older than the cut-off it was filtered on.
+     */
+    public boolean isStale(VehicleStatusBean vehicleStatus, long time) {
+        if (_maxVehicleAgeMillis <= 0L || vehicleStatus == null) {
+            return false;
+        }
+        long lastUpdate = vehicleStatus.getLastUpdateTime();
+        if (lastUpdate <= 0L) {
+            return false;   // no timestamp to judge by; leave existing behaviour untouched
+        }
+        return (time - lastUpdate) > _maxVehicleAgeMillis;
     }
 
     public boolean includeVehicle(TransitDataService tds, PresentationService presentationService,
                                   VehicleStatusBean vehicleStatus, long time) {
+        if (isStale(vehicleStatus, time)) {
+            return Boolean.FALSE;
+        }
         TripDetailsBean tripDetails = getTripForVehicle(tds, vehicleStatus, time);
         presentationService.setTime(time);
         if (tripDetails == null || !presentationService.include(tripDetails.getStatus()) || vehicleStatus.getTrip() == null) {

@@ -21,7 +21,9 @@ case "$ACTION" in
     run_oba "cd /opt/oba/onebusaway-nyc && GIT_SSH_COMMAND='ssh -F ~/.ssh/config' git fetch -q --all && git checkout -q '$REF' && git pull -q --ff-only && echo main @ \$(git rev-parse --short HEAD)"
     run_oba "cd /opt/oba/onebusaway-nyc-predictions && GIT_SSH_COMMAND='ssh -F ~/.ssh/config' git pull -q --ff-only && echo pred @ \$(git rev-parse --short HEAD)"
     echo "== rebuild (broker + 3 webapps) =="
-    run_oba "export JAVA_HOME=$JH PATH=$JH/bin:\$PATH MAVEN_OPTS=-Xmx4g; cd /opt/oba/onebusaway-nyc && mvn -B -q -pl onebusaway-nyc-queue-broker,onebusaway-nyc-vehicle-tracking,onebusaway-nyc-vehicle-tracking-webapp,onebusaway-nyc-gtfsrt-webapp -DskipTests -Dlicense.skip=true install"
+    # onebusaway-nyc-gtfsrt (the feed-building library) must be listed explicitly: there is no -am here,
+    # so a change to it would otherwise not be rebuilt and the webapp would link the stale jar from ~/.m2.
+    run_oba "export JAVA_HOME=$JH PATH=$JH/bin:\$PATH MAVEN_OPTS=-Xmx4g; cd /opt/oba/onebusaway-nyc && mvn -B -q -pl onebusaway-nyc-queue-broker,onebusaway-nyc-vehicle-tracking,onebusaway-nyc-vehicle-tracking-webapp,onebusaway-nyc-gtfsrt,onebusaway-nyc-gtfsrt-webapp -DskipTests -Dlicense.skip=true install"
     run_oba "export JAVA_HOME=$JH PATH=$JH/bin:\$PATH MAVEN_OPTS=-Xmx4g; cd /opt/oba/onebusaway-nyc-predictions && mvn -B -q -pl onebusaway-nyc-predictions-webapp -DskipTests -Dlicense.skip=true install"
     echo "== restart services =="
     systemctl restart oba-broker oba-inference oba-predictions oba-gtfsrt
