@@ -36,6 +36,11 @@
 		</dependency>
 		<dependency>
 			<groupId>org.onebusaway</groupId>
+			<artifactId>onebusaway-nyc-tdm-adapters</artifactId>
+			<version>${project.version}</version>
+		</dependency>
+		<dependency>
+			<groupId>org.onebusaway</groupId>
 			<artifactId>onebusaway-nyc-util</artifactId>
 			<version>${project.version}</version>
 		</dependency>

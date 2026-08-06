@@ -20,4 +20,7 @@ exec mvn -B -P local-ie-testing -DskipTests -Dlicense.skip=true \
   -Doba.rmq.ssl="$(gp /oba/rabbitmq/ssl)" \
   -Doba.rmq.offset="$(gp /oba/rabbitmq/offset)" \
   -Doba.rmq.prefetch="$(gp /oba/rabbitmq/prefetch)" \
+  -Doba.crew.service.class=org.onebusaway.nyc.vehicle_tracking.impl.crew.S3UtsOperatorAssignmentServiceImpl \
+  -Doba.crew.s3.accessKey="$(gp /oba/uts/s3/accessKey)" \
+  -Doba.crew.s3.secretKey="$(gp /oba/uts/s3/secretKey)" \
   "$JETTY"

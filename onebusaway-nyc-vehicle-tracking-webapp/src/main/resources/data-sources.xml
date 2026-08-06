@@ -63,6 +63,9 @@
     
     <bean id="vehiclePulloutService" class="org.onebusaway.nyc.transit_data_federation.impl.vtw.${vehicle.pipo.service}" />
 
+    <!-- UTS crew roster: TDM API (prod) or S3 CIS file (EC2). Selected via ${oba.crew.service.class}. -->
+    <bean id="operatorAssignmentService" class="${oba.crew.service.class}" />
+
     <!--  Cancelled Trip Configuration -->
     <bean id="cancelledTripService" class="org.onebusaway.nyc.transit_data_federation.impl.queue.CancelledTripHttpListenerTask">
     </bean>
