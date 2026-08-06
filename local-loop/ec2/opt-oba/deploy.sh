@@ -16,15 +16,21 @@ case "$ACTION" in
     [ "$code" = "200" ]
     ;;
   deploy)
-    REF="${2:-rsen/ec2-productionize-gtfs-rt}"
-    echo "== git pull (main ref=$REF) =="
+    # Defaults must track what is deployed, or a ref-less deploy switches branches under the
+    # running service.
+    REF="${2:-timothy/ec2-oba-fixes}"
+    PRED_REF="${3:-timothy/ec2-oba-config-fixes}"
+    echo "== git pull (main ref=$REF, predictions ref=$PRED_REF) =="
     run_oba "cd /opt/oba/onebusaway-nyc && GIT_SSH_COMMAND='ssh -F ~/.ssh/config' git fetch -q --all && git checkout -q '$REF' && git pull -q --ff-only && echo main @ \$(git rev-parse --short HEAD)"
-    run_oba "cd /opt/oba/onebusaway-nyc-predictions && GIT_SSH_COMMAND='ssh -F ~/.ssh/config' git pull -q --ff-only && echo pred @ \$(git rev-parse --short HEAD)"
+    # Checkout, not just pull: otherwise this repo stays on whatever branch the host clone is on.
+    run_oba "cd /opt/oba/onebusaway-nyc-predictions && GIT_SSH_COMMAND='ssh -F ~/.ssh/config' git fetch -q --all && git checkout -q '$PRED_REF' && git pull -q --ff-only && echo pred @ \$(git rev-parse --short HEAD)"
     echo "== rebuild (broker + 3 webapps) =="
-    # onebusaway-nyc-gtfsrt (the feed-building library) must be listed explicitly: there is no -am here,
-    # so a change to it would otherwise not be rebuilt and the webapp would link the stale jar from ~/.m2.
+    # -pl without -am builds only the modules named here, so every changed module must be listed
+    # or the webapp links a stale jar from ~/.m2.
     run_oba "export JAVA_HOME=$JH PATH=$JH/bin:\$PATH MAVEN_OPTS=-Xmx4g; cd /opt/oba/onebusaway-nyc && mvn -B -q -pl onebusaway-nyc-queue-broker,onebusaway-nyc-vehicle-tracking,onebusaway-nyc-vehicle-tracking-webapp,onebusaway-nyc-gtfsrt,onebusaway-nyc-gtfsrt-webapp -DskipTests -Dlicense.skip=true install"
-    run_oba "export JAVA_HOME=$JH PATH=$JH/bin:\$PATH MAVEN_OPTS=-Xmx4g; cd /opt/oba/onebusaway-nyc-predictions && mvn -B -q -pl onebusaway-nyc-predictions-webapp -DskipTests -Dlicense.skip=true install"
+    # Same trap: without predictions-common, a stale jar missing a class the Spring context
+    # references stops predictions from starting at all.
+    run_oba "export JAVA_HOME=$JH PATH=$JH/bin:\$PATH MAVEN_OPTS=-Xmx4g; cd /opt/oba/onebusaway-nyc-predictions && mvn -B -q -pl onebusaway-nyc-predictions-common,onebusaway-nyc-predictions-webapp -DskipTests -Dlicense.skip=true install"
     echo "== restart services =="
     systemctl restart oba-broker oba-inference oba-predictions oba-gtfsrt
     sleep 20
@@ -32,5 +38,5 @@ case "$ACTION" in
     echo "== smoke (best-effort; apps may still be warming) =="
     curl -s -o /dev/null -w 'gtfsrt /tripUpdates http=%{http_code}\n' 'http://localhost:8083/tripUpdates?debug=true' || true
     ;;
-  *) echo "usage: deploy.sh [deploy <ref> | set-weights S H R]"; exit 2;;
+  *) echo "usage: deploy.sh [deploy [<main-ref> [<predictions-ref>]] | set-weights S H R]"; exit 2;;
 esac
