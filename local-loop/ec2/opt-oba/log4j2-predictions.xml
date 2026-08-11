@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The predictions webapp ships a log4j 1.x log4j.xml but resolves log4j 2.x at runtime, so log4j2
+  parses it, fails to build any appender from the 1.x <appender class="..."/> syntax, and leaves the
+  root logger with none:
+
+    ERROR Unable to locate appender "${log4j.appender}" for logger config "root"
+
+  Every application log line was discarded, including ERROR. ${log4j.appender} is a Maven filtering
+  placeholder that is never substituted either. Point the JVM here instead
+  (-Dlog4j.configurationFile) rather than depend on that build-time substitution.
+
+  Levels are deliberately narrow: this host is CPU-bound at peak, and PredictionsGeneratorWorker
+  warns on the per-vehicle path (~3,500 vehicles x ~5 updates/min), so it stays at error.
+-->
+<Configuration status="WARN">
+  <Appenders>
+    <Console name="stdout" target="SYSTEM_OUT">
+      <PatternLayout pattern="%d{ISO8601} %-5p [%c{1}] %m%n"/>
+    </Console>
+  </Appenders>
+  <Loggers>
+    <!-- Per-vehicle hot path; its warns fire per update. -->
+    <Logger name="org.onebusaway.nyc.predictions.prognosticator.impl.PredictionsGeneratorWorker" level="error"/>
+    <!-- YardTrek pullout refresh + cache state: once a minute, and the only view we have of it. -->
+    <Logger name="org.onebusaway.nyc.predictions.prognosticator.impl.PulloutsManagementService" level="info"/>
+    <Root level="warn">
+      <AppenderRef ref="stdout"/>
+    </Root>
+  </Loggers>
+</Configuration>

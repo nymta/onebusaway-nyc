@@ -40,6 +40,7 @@ case "$ACTION" in
     for f in env-common.sh run-broker.sh run-inference.sh run-predictions.sh run-gtfsrt.sh deploy.sh monitor.sh set-weights.sh; do
       install -m 755 "$SRC/opt-oba/$f" "/opt/oba/$f"
     done
+    install -m 644 "$SRC/opt-oba/log4j2-predictions.xml" /opt/oba/log4j2-predictions.xml
     echo "== install predictions archiver =="
     install -m 755 "$SRC/opt-oba/predictions-archiver.py" /opt/oba/predictions-archiver.py
     install -m 755 "$SRC/opt-oba/run-predictions-archiver.sh" /opt/oba/run-predictions-archiver.sh

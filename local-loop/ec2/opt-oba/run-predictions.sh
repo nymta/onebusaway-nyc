@@ -10,6 +10,7 @@ exec mvn -B -DskipTests -Dlicense.skip=true \
   -Dmongohost=localhost -Dmongoport=27017 -Dmongouser= -Dmongopwd= \
   -DCloudWatchKey="$(gp /oba/uts/s3/accessKey)" \
   -DCloudWatchSecret="$(gp /oba/uts/s3/secretKey)" \
+  -Dlog4j.configurationFile=/opt/oba/log4j2-predictions.xml \
   -Dorg.onebusaway.nyc.tdm.bundle.batchmode=true \
   -Doba.config.predictions.PredictionLevel=NEXT_TRIP \
   -Djetty.http.port=8082 \
