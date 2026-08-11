@@ -11,12 +11,18 @@ ensure_mongo || exit 1
 if port_up "$Q_IN" && port_up "$Q_OUT"; then
   echo "predictions: already up (queues $Q_IN/$Q_OUT bound)"
 else
+  S3_KEY="$(aws ssm get-parameter --name /oba/uts/s3/accessKey --with-decryption --query Parameter.Value --output text 2>/dev/null)"
+  S3_SECRET="$(aws ssm get-parameter --name /oba/uts/s3/secretKey --with-decryption --query Parameter.Value --output text 2>/dev/null)"
+  if [ "${#S3_KEY}" -lt 2 ] || [ "${#S3_SECRET}" -lt 2 ]; then
+    echo "predictions: WARNING no S3 credential from SSM"
+    S3_KEY=x; S3_SECRET=x
+  fi
   echo "predictions: starting (Jetty 9 :$PRED_PORT, Mongo, Manhattan bundle)..."
   ( cd "$PRED_REPO" && nohup "$MVN" -f onebusaway-nyc-predictions-webapp/pom.xml \
       -DskipTests -Dlicense.skip=true -B \
       -Dbundle.location="$BUNDLE_PARENT" -Dbundle.mode.standalone=true -Dtdm.host= \
       -Dmongohost=localhost -Dmongoport=27017 -Dmongouser= -Dmongopwd= \
-      -DCloudWatchKey=x -DCloudWatchSecret=x \
+      -DCloudWatchKey="$S3_KEY" -DCloudWatchSecret="$S3_SECRET" \
       -Dorg.onebusaway.nyc.tdm.bundle.batchmode=true \
       -Djetty.http.port="$PRED_PORT" \
       "$JETTY":run > "$PRED_LOG" 2>&1 < /dev/null & disown ) 2>/dev/null

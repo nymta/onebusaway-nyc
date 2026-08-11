@@ -12,7 +12,10 @@ on:
         default: deploy
       ref:
         description: "git ref/branch to deploy (main repo)"
-        default: rsen/ec2-productionize-gtfs-rt
+        default: ds/ec2-deploy
+      predictions_ref:
+        description: "git ref/branch to deploy (predictions repo)"
+        default: ds/ec2-deploy
       schedule:
         description: "SCHEDULE weight % (set-weights)"
         default: "20"
@@ -54,7 +57,7 @@ jobs:
           if [ "${{ inputs.action }}" = "set-weights" ]; then
             CMD="/opt/oba/deploy.sh set-weights ${{ inputs.schedule }} ${{ inputs.historical }} ${{ inputs.recent }}"
           else
-            CMD="/opt/oba/deploy.sh deploy ${{ inputs.ref }}"
+            CMD="/opt/oba/deploy.sh deploy ${{ inputs.ref }} ${{ inputs.predictions_ref }}"
           fi
           echo "remote command: $CMD"
           PARAMS=$(jq -nc --arg c "$CMD" '{commands:[$c]}')

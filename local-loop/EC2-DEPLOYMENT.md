@@ -82,10 +82,10 @@ All app ports (8081/8082/8083, broker 5566/5567, predictions-time 5568, Mongo 27
 
 - **EC2:** `i-0386b6bb8338b2f67` (`oba-nyc-prod`, **c7i.12xlarge** 48 vCPU/96 GB, Amazon Linux 2023). **EIP 52.70.255.34.** 30 GB gp3 root + **500 GB gp3** data volume at `/data` (Mongo + bundle; `DeleteOnTermination=false`).
 - **Security group** `sg-0fca012b2afe2a1ee`: inbound **:80 from 0.0.0.0/0** only. Everything else closed.
-- **IAM:** instance profile `oba-nyc-ec2-profile` / role `oba-nyc-ec2-role` (SSM core + read `/oba/*` + write `/oba/predictions/weights` + read the S3 bundle bucket + write `s3://mtalirr/oba-ec2-predictions/*` via inline policy `oba-s3-predictions-archive-write`). Deploy role `oba-nyc-gha-deploy` (GitHub OIDC → `ssm:SendCommand` on this instance).
-- **SSM Parameter Store:** `/oba/rabbitmq/*` (feed creds — SecureString user/pass), `/oba/predictions/weights` = `20/40/40`.
+- **IAM:** instance profile `oba-nyc-ec2-profile` / role `oba-nyc-ec2-role` (SSM core + read `/oba/*` + write `/oba/predictions/weights` + read the S3 bundle bucket + write `s3://oba-ec2-predictions/*`, the dedicated bucket shared with D&A, and the legacy `s3://mtalirr/oba-ec2-predictions/*` — both via inline policy `oba-s3-predictions-archive-write`). Deploy role `oba-nyc-gha-deploy` (GitHub OIDC → `ssm:SendCommand` on this instance).
+- **SSM Parameter Store:** `/oba/rabbitmq/*` (feed creds — SecureString user/pass), `/oba/predictions/weights` = `20/40/40`, `/oba/uts/s3/{accessKey,secretKey}` (`digital-services` in `151844622248` — reads the UTS crew roster *and* the YardTrek pullout feed; passed to predictions as `CloudWatchKey/Secret`, which is what `AWSS3Helper` reads).
 - **S3:** `oba-nyc-bundles-032610139471` (bundle transfer: `2026Jun_Manhattan_C6/`, `wholeMTA-C6-src/`).
-- **Repos** (push to `nymta` only): `nymta/onebusaway-nyc` @ `rsen/ec2-productionize-gtfs-rt`; `nymta/onebusaway-nyc-predictions` @ `rsen/local-gps-predictions`. Cloned on the host under `/opt/oba` via per-repo read-only deploy keys.
+- **Repos** (push to `nymta` only): both deploy from `ds/ec2-deploy` — `nymta/onebusaway-nyc` and `nymta/onebusaway-nyc-predictions`. Cloned on the host under `/opt/oba` via per-repo read-only deploy keys.
 
 ---
 

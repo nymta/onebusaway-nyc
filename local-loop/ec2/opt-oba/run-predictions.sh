@@ -8,7 +8,8 @@ cd "$PRED/onebusaway-nyc-predictions-webapp"
 exec mvn -B -DskipTests -Dlicense.skip=true \
   -Dbundle.location="$BUNDLE" -Dbundle.mode.standalone=true -Dtdm.host= \
   -Dmongohost=localhost -Dmongoport=27017 -Dmongouser= -Dmongopwd= \
-  -DCloudWatchKey=x -DCloudWatchSecret=x \
+  -DCloudWatchKey="$(gp /oba/uts/s3/accessKey)" \
+  -DCloudWatchSecret="$(gp /oba/uts/s3/secretKey)" \
   -Dorg.onebusaway.nyc.tdm.bundle.batchmode=true \
   -Doba.config.predictions.PredictionLevel=NEXT_TRIP \
   -Djetty.http.port=8082 \

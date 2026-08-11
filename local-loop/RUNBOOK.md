@@ -226,7 +226,7 @@ and `inference-engine.acceptAllVehicles=true`; that flag bypasses depot-partitio
 | `…/predictions-integration-tests/pom.xml` | added `graph-builder-execution-<pick>` execs (historical; superseded by the direct `java` build in §10) | bundle build scaffolding |
 
 Run-time switches (no file edits): `-P local-ie-testing,local-live-feed`, `-Die.output.queue=OutputQueueSenderServiceImpl`,
-`-DtimePredictions.status=ENABLED`, `-Dbundle.location=…`, `-Dmongohost/port/user/pwd`, `-DCloudWatchKey/Secret=x`,
+`-DtimePredictions.status=ENABLED`, `-Dbundle.location=…`, `-Dmongohost/port/user/pwd`, `-DCloudWatchKey/Secret`,
 `-Dorg.onebusaway.nyc.tdm.bundle.batchmode=true`, and **Eclipse `jetty-maven-plugin:9.4.51`** (not the pom's mortbay Jetty 6).
 
 ---

@@ -17,13 +17,17 @@ case "$ACTION" in
     ;;
   deploy)
     # Defaults must track what is deployed, or a ref-less deploy switches branches under the
-    # running service.
-    REF="${2:-timothy/ec2-oba-fixes}"
-    PRED_REF="${3:-timothy/ec2-oba-config-fixes}"
+    # running service. Both repos deploy from ds/ec2-deploy.
+    REF="${2:-ds/ec2-deploy}"
+    PRED_REF="${3:-ds/ec2-deploy}"
     echo "== git pull (main ref=$REF, predictions ref=$PRED_REF) =="
-    run_oba "cd /opt/oba/onebusaway-nyc && GIT_SSH_COMMAND='ssh -F ~/.ssh/config' git fetch -q --all && git checkout -q '$REF' && git pull -q --ff-only && echo main @ \$(git rev-parse --short HEAD)"
+    # Abort on a failed checkout/pull. Without this the script carries on and rebuilds, installs
+    # and restarts from whatever tree the host happened to be on -- a silent deploy of the wrong code.
+    run_oba "cd /opt/oba/onebusaway-nyc && GIT_SSH_COMMAND='ssh -F ~/.ssh/config' git fetch -q --all && git checkout -q '$REF' && git pull -q --ff-only && echo main @ \$(git rev-parse --short HEAD)" \
+      || { echo "ERROR: main repo could not check out '$REF' -- aborting before rebuild"; exit 1; }
     # Checkout, not just pull: otherwise this repo stays on whatever branch the host clone is on.
-    run_oba "cd /opt/oba/onebusaway-nyc-predictions && GIT_SSH_COMMAND='ssh -F ~/.ssh/config' git fetch -q --all && git checkout -q '$PRED_REF' && git pull -q --ff-only && echo pred @ \$(git rev-parse --short HEAD)"
+    run_oba "cd /opt/oba/onebusaway-nyc-predictions && GIT_SSH_COMMAND='ssh -F ~/.ssh/config' git fetch -q --all && git checkout -q '$PRED_REF' && git pull -q --ff-only && echo pred @ \$(git rev-parse --short HEAD)" \
+      || { echo "ERROR: predictions repo could not check out '$PRED_REF' -- aborting before rebuild"; exit 1; }
     echo "== rebuild (broker + 3 webapps) =="
     # -pl without -am builds only the modules named here, so every changed module must be listed
     # or the webapp links a stale jar from ~/.m2.
