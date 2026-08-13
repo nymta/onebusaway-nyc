@@ -12,8 +12,9 @@ live only in `~oba/.ssh` on the host and are deliberately excluded.
 | repo path | host path | role |
 |---|---|---|
 | `opt-oba/env-common.sh` | `/opt/oba/env-common.sh` | shared env + `gp()` (SSM param fetch) |
-| `opt-oba/run-{broker,inference,predictions,gtfsrt,predictions-archiver}.sh` | `/opt/oba/` | service launchers (invoked by the systemd units) |
+| `opt-oba/run-{broker,inference,predictions,gtfsrt,predictions-archiver,inference-archiver}.sh` | `/opt/oba/` | service launchers (invoked by the systemd units) |
 | `opt-oba/predictions-archiver.py` | `/opt/oba/predictions-archiver.py` | ZMQ :5568 → hourly `queuePredictions_*.zip` → S3 |
+| `opt-oba/inference-archiver.py` | `/opt/oba/inference-archiver.py` | ZMQ :5567 → hourly `queueInference_*.zip` → S3 (replay input capture; optional) |
 | `opt-oba/set-weights.sh` | `/opt/oba/set-weights.sh` | reads SSM `/oba/predictions/weights`, POSTs `/api/weight` |
 | `opt-oba/deploy.sh` | `/opt/oba/deploy.sh` | GitHub-Action target (modes `deploy` / `set-weights`) |
 | `opt-oba/monitor.sh` | `/opt/oba/monitor.sh` | emits `OBA/Prod` CloudWatch metrics (run by the timer) |
@@ -57,6 +58,25 @@ compared offline hour-for-hour.
   otherwise the instance profile (`oba-nyc-ec2-role`, inline policy `oba-s3-predictions-archive-write`).
 - **Health:** `journalctl -u oba-predictions-archiver` logs a stats line every
   `OBA_ARCHIVER_LOG_STATS_SEC` (60 s). **Local-only test:** `OBA_ARCHIVER_UPLOAD=false`.
+
+### Inference S3 archiver (`inference-archiver.py`) — optional, for replay capture
+
+Captures the **post-inference stream** (the predictions engine's input) as replay input for the
+predictions replay engine (see `REPLAY-ENGINE-FINDINGS.md` in the predictions repo) and as the
+golden format sample for inference-replay work.
+
+- **Source:** SimpleBroker fan-out (`127.0.0.1:5567`, topic `inference_queue`) — the same stream
+  the predictions webapp subscribes to. A passive `zmq.SUB`; cannot slow or drop anything upstream.
+- **Per message:** the payload is already one `NycQueuedInferredLocationBean` JSON object; it is
+  appended **verbatim** as one NDJSON line (byte-for-byte the predictions integration-test
+  `PIQ-*` trace format). Hourly rotation to `queueInference_YYYY-MM-DD_HH-00-00.zip`, uploaded to
+  `s3://mtalirr/oba-ec2-inference/`. ~3.5 GB/hour raw before the ~10:1 zip; keep an eye on
+  `/data` free space.
+- **Env:** `OBA_INF_ARCHIVER_*` mirrors the predictions archiver's knobs (host/port/topic/dir/
+  bucket/prefix/upload/retries/stats). Restart semantics identical: SIGTERM leaves the partial
+  hour on disk, next start appends.
+- **Deploy note:** the instance profile policy must additionally allow `s3:PutObject` on
+  `s3://mtalirr/oba-ec2-inference/*` before enabling `oba-inference-archiver.service`.
 
 ## Current tuning captured (this commit)
 - inference `-Xmx30g` + ingestion deadband `minMeters=10 / minIntervalSec=7 / maxAgeSec=30` ("7 s-while-moving"; widened from 5 s on 2026-07-22) + stale-fix load-shedding `oba.shed.maxAgeSec=50` — `run-inference.sh`

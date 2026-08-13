@@ -1,0 +1,15 @@
+[Unit]
+Description=OBA-NYC inference S3 archiver (ZMQ :5567 -> queueInference hourly zips)
+After=network-online.target oba-broker.service
+Wants=network-online.target
+Requires=oba-broker.service
+
+[Service]
+User=oba
+ExecStart=/opt/oba/run-inference-archiver.sh
+Restart=always
+RestartSec=15
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
