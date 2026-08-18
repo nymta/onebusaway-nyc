@@ -30,3 +30,9 @@ onebusaway-nyc-integration-tests/overlays/
 ### Release Files
 *pom.xml.releaseBackup
 release.properties
+
+### Local working data — bundles, GTFS/STIF, replay fixtures (RUNBOOK.md §3, §10)
+# Large and partly proprietary: a built whole-MTA bundle alone is ~800 MB, and the STIF it derives
+# from is not public. This rule lived only in individual clones' .git/info/exclude, so it never
+# reached a fresh checkout even though the runbook describes .context/ as git-ignored.
+.context/

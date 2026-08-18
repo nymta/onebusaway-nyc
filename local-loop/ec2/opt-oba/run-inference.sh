@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source /opt/oba/env-common.sh
-export MAVEN_OPTS="-Xmx30g"
+# -Duser.timezone: Amazon Linux defaults to UTC, a developer Mac to Eastern. Several places build a
+# civil date in the JVM default zone and compare it against another value built the same way - the UTS
+# roster match in ImporterOperatorAssignmentData:79-82 among them - so the zone decides which civil day
+# a record belongs to, and an unpinned zone makes EC2 and local disagree. America/New_York is the zone
+# the bundle itself carries.
+export MAVEN_OPTS="-Xmx30g -Duser.timezone=America/New_York"
 cd "$MAIN/onebusaway-nyc-vehicle-tracking-webapp"
 exec mvn -B -P local-ie-testing -DskipTests -Dlicense.skip=true \
   -Die.listener=RabbitMqInputQueueListenerTask \
