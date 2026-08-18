@@ -1,0 +1,97 @@
+# Worklog: `marcos/replay-harness`
+
+## 2026-08-18, as of `e253dbf12`
+
+### Changes vs. `timothy/ec2-oba-improvements-v2`
+
+`timothy/ec2-oba-improvements-v2` (tip `5a5efcf9`, "Archive the predictions stream to S3 for offline
+comparison") is fully contained in this branch. Every commit below is additional; nothing from
+Timothy's branch is missing or overwritten.
+
+Where a commit changes code, whether it is active only under a replay flag or changes default
+(production) behavior is called out explicitly, since that distinction determines how carefully it
+needs review before merging back.
+
+| Commit | Theme | Purpose | Files / LOC | Inference-engine impact |
+|---|---|---|---|---|
+| `61657d1a9` | Replay/local-dev harness tooling and docs | Scripts, docs, and fixture-prep tools for running and observing replay locally: build helpers, the observer, `RUNBOOK`/`REPLAY`/`OBA-BUGS` docs, the laptop `replay.sh` driver | 20 files, +1,681/-20 | **Zero.** Nothing under `src/main`; not compiled into any deployed artifact. |
+| `ce747e13b` | Virtual clock for replay | `MutableClock` drives the engine's notion of "now" from each record's own timestamp instead of the wall clock, so replay runs as fast as inference allows rather than pacing at 1x | 1 file, +104 | **Zero outside replay.** Only resolves under the `replay` Spring profile; any other profile keeps `Clock.systemUTC()`, and fails loudly rather than silently if a replay driver is selected without it. |
+| `33f3a26e7` | Per-vehicle striping; configurable thread/particle counts | Each vehicle hashes onto one single-thread stripe, so records process in arrival order instead of racing through a shared pool (which was dropping most out-of-order arrivals). Stripe count (`-Doba.inference.threads`) and particle count (`-Doba.particle.count`) are launch-time overrides | 2 files, +173/-36 | **Always-on** (the striping architecture itself changes production's concurrency model, not just replay's), **but the overrides are no-ops unless explicitly set**, so default values are unchanged. |
+| `62a1a91eb` | Multi-threaded determinism | Three independent non-determinism causes, found and fixed: (1) one shared random generator across all vehicles, replaced by `InferenceRng`'s per-vehicle seeded streams; (2) `BlockConfigurationEntryImpl`/`TripEntryImpl` had no value-based `hashCode`, so `HashSet`/`HashMap` iteration order depended on memory addresses (shadow copies add a content-based `hashCode`, nothing else); (3) `ScheduleLikelihood.POS_SCHED_DEV_CUTOFF`, a mutable static field hit by every stripe concurrently, now a local variable. Verified with `replay-determinism.sh`: multi-threaded output now matches the single-threaded baseline | 16 files, +2,460/-23 | **Always-on**, and a genuine correctness improvement in all three cases, not just a replay concern. A shared RNG and address-dependent hash ordering are latent bugs in any concurrent use, not only in replay. |
+| `6e1d40819` | Gate wall-clock periodic tasks off under replay | `GatedTaskScheduler`/`Replayable`/`ReplayDomain` let a background task (telemetry polling, config refresh, etc.) opt out of scheduling when a replay driver is active, since those tasks don't mean anything against a virtual clock. Each affected task gets one `@Replayable(...)` annotation | 16 files, +307/-2 | **Low outside replay.** Annotations are inert unless `GatedTaskScheduler` is wired in, which only happens under the replay profile. |
+| `f2f010a5a` | UTS crew assignments from an S3 archive | `S3UtsOperatorAssignmentServiceImpl`/`CrewSnapshotIndex` read pre-fetched UTS operator/run assignment snapshots from S3, as of the replay clock, instead of calling the live TDM | 5 files, +413/-13 | **Medium.** Selected via the `oba.crew.service.class` property; `OperatorAssignmentServiceImpl`'s default behavior is unchanged unless that property is set. |
+| `e253dbf12` | Replay driven from archived S3 GPS, with a route filter and S3 output | `ReplayFileInputTask` reads archived `bustechGps` records from S3 (through a FIFO fed by `run-replay.sh`, in order, on the virtual clock), optionally restricted by `-Dreplay.routeFilter` for a faster correctness smoke test. `S3OutputQueueSenderServiceImpl` writes inferred locations back to S3 instead of publishing live. `run-replay.sh`'s default stripe count derives from the box's vCPU count minus 2, not a hardcoded number | 5 files, +914/-10 | **Zero outside replay.** Only active under `-Die.listener=ReplayFileInputTask -Dspring.profiles.active=replay`. |
+| `eb9958ea8` | EC2 scaling benchmarks | Documents fleet sizes, CPU-bound evidence, particle-count and vCPU scaling results (with a socket caveat), and the multithreaded determinism fix, from the c7i.12xlarge benchmark box | 1 file, +130 | **Zero.** Documentation only. |
+
+#### Changes to default (production) behavior
+
+Two commits change default behavior, not just replay behavior, and both are correctness fixes rather
+than new features:
+
+- **`33f3a26e7`**: the striping architecture itself. Every vehicle now processes on a dedicated
+  single thread instead of a shared pool. This is a behavior change in production, motivated by a real
+  bug (a shared pool dropping most out-of-order arrivals), not an optional feature.
+- **`62a1a91eb`**: the per-vehicle RNG and the two `hashCode` fixes apply everywhere the affected
+  classes are used, not just under replay. `ScheduleLikelihood`'s race fix is the same: it changes the
+  schedule-likelihood probability computation for every concurrent run, replay or production.
+
+Everything else in this branch is either purely additive tooling (zero footprint in a deployed
+artifact) or gated behind a system property or Spring profile that defaults to today's behavior.
+
+#### Verified
+
+- `onebusaway-nyc-vehicle-tracking-webapp` and `onebusaway-nyc-gtfsrt-webapp` both build clean.
+- Multi-threaded replay determinism, verified with `local-loop/determinism/replay-determinism.sh` at
+  `OBA_INFERENCE_THREADS` above 1, output matches the single-threaded baseline.
+
+### Scheduled/periodic task audit
+
+`GatedTaskScheduler` only intercepts tasks scheduled through whichever Spring `TaskScheduler` bean is
+actually wired in. Confirmed by tracing `web.xml`'s context load order (`data-sources.xml` loads last
+of the three root context files), so its replay-profile `taskScheduler` bean (`GatedTaskScheduler`)
+genuinely wins over the separate, always-plain `taskScheduler` beans defined in `onebusaway-nyc-util`
+and other modules. The `@Replayable` annotations on util/transit-data-federation classes are real and
+enforced, not inert.
+
+Five domains (`ReplayDomain.java`), with what is actually tagged under each:
+
+- **`INFERENCE_INPUT`**: "writes state the particle filter reads." Crew assignments
+  (`S3UtsOperatorAssignmentServiceImpl`), vehicle pullout (`VehiclePulloutServiceImpl`),
+  unassigned-vehicle tracking (`UnassignedVehicleServiceImpl`), TDM operator assignments
+  (`OperatorAssignmentServiceImpl`).
+- **`CONFIG`**: "refreshes configuration, which can change behaviour anywhere mid-run."
+  `ConfigurationServiceImpl`, `CapiDaoHttpImpl`, part of `HTTPListenerTask`, part of
+  `UnassignedVehicleServiceImpl`.
+- **`BUNDLE`**: "discovers or switches bundles. A switch resets per-vehicle state."
+  `BundleManagementServiceImpl`'s discovery and switch timers.
+- **`OUTPUT`**: "output plumbing, or fields written onto the published record but not read by
+  inference." Two secondary scheduled methods on `OutputQueueSenderServiceImpl` (not its main flush
+  loop, which deliberately bypasses the gate through its own executor, since output has to keep
+  flowing regardless), and `VehicleAssignmentServiceImpl`.
+- **`TELEMETRY`**: "neither read by inference nor published." The three `Apc*` classes,
+  `NycRouteTypeService`, part of `HTTPListenerTask`.
+
+**`-Doba.replay.tasks` is never set in `run-replay.sh`.** `GatedTaskScheduler` defaults that to an
+empty domain set, so today every `@Replayable` task is unconditionally dropped, regardless of domain.
+This matches REPLAY.md's own tested claim that gating is inert with all domains blocked. The
+five-domain taxonomy is currently unused in practice; nothing is being selectively re-enabled.
+
+**The 30-minute crew-refresh task** (`S3UtsOperatorAssignmentServiceImpl`'s `CrewRefreshTask`,
+`30 * 60` seconds) is covered twice over, not missed. It is `@Replayable(INFERENCE_INPUT)`, and
+separately, when a local snapshot directory is configured (the actual replay path), the method
+returns early before ever scheduling anything. The crew roster becomes a stateless lookup keyed on
+the virtual clock instead of a periodic refresh.
+
+**STIF/bundle case**: correct as-is, not a risk. GTFS/STIF are consumed at bundle-build time, not
+runtime, so there is no live refresh to gate in the first place. The real safety comes from the
+precondition that a replay window sits entirely inside one bundle's validity period, enforced by
+`replay-determinism.sh` asserting exactly one bundle directory present, not from batch mode or from
+gating the switch timer.
+
+**Stubbing audit**: nothing stubbed under the replay profile diverges from current production.
+`DummyVehiclePulloutService`/`DummyUnassignedVehicleServiceImpl` and the empty TDM host config are
+already true in production; replay inherits them rather than introducing new stubbing.
+
+**Conclusion**: no wall-clock task escapes the gate, and no gated task is being dropped when it
+should instead run against virtual time. The crew solution (a stateless lookup keyed on the virtual
+clock) is a better pattern than rescheduling against virtual time would have been, not a gap.

@@ -77,14 +77,17 @@ API confirms vCPU/physical-core counts for the c7i family but does not expose so
 | c7i.24xlarge | 96 | 48 |
 | c7i.48xlarge | 192 | 96 |
 
-Physical core count exactly doubles between `24xlarge` (48 cores) and `48xlarge` (96 cores). AWS's
-Sapphire Rapids SKU in this family tops out around 48 physical cores per socket, so this doubling is
-consistent with `24xlarge` and everything smaller staying single-socket, and `48xlarge` being the first
-size that needs two sockets. This is a well-supported inference from the core-count pattern, not a
-directly confirmed fact — worth checking against AWS's own documentation before committing budget to a
-`48xlarge`. Practical takeaway: `c7i.24xlarge` (96 vCPUs / 48 cores) is the safer bet for extending this
-result; `c7i.48xlarge` is where cross-socket memory latency becomes a real unknown, since every stripe
-reaches the same shared ~4.5GB transit graph.
+Physical core count exactly doubles between `24xlarge` (48 cores) and `48xlarge` (96 cores). Checked
+against outside sources (2026-08-18): the exact chip AWS uses here, Intel Xeon Platinum 8488C, is a
+48-core-per-socket part. Independent sources describing AWS's Nitro bare-metal `metal-24xl`/`metal-48xl`
+split consistently say `metal-24xl` is one physical dual-socket host split into two isolated
+single-socket bare-metal instances, and `metal-48xl` is the same physical host passed through whole,
+both sockets. That lines up exactly with the core-count doubling here. AWS's own instance-type
+specification pages confirm vCPU/core/thread-per-core counts but do not list socket count for any
+instance type, so this is corroborated by multiple independent secondary sources, not stated outright
+by AWS itself. Practical takeaway unchanged: `c7i.24xlarge` (96 vCPUs / 48 cores) is the safer bet for
+extending this result; `c7i.48xlarge` is where cross-socket memory latency becomes a real unknown, since
+every stripe reaches the same shared ~4.5GB transit graph.
 
 Also worth ruling out before assuming more threads always helps: OBA's original default stripe-count
 formula, `2 + availableProcessors() * 20` (`VehicleLocationInferenceServiceImpl.java:168`), would give
@@ -93,6 +96,44 @@ workload (each stripe mostly waits on sporadic real-time GPS pings), not replay'
 batch workload. Oversubscribing 962 runnable threads onto 48 logical CPUs would add scheduling and
 cache-thrashing overhead with no corresponding parallelism gain; expected to hurt replay throughput, not
 help it. Not empirically tested.
+
+## Cost to replay one week of full-fleet data
+
+Estimates below hold particle count at the default (200) and only vary vCPU count and machine count,
+extrapolating from the measured 1.7x speed at 46 threads on `c7i.12xlarge`. On-demand pricing, us-east-1,
+Linux, checked 2026-08-18: `c7i.12xlarge` $2.142/hour, `c7i.24xlarge` $4.284/hour (exactly double, AWS
+prices this family linearly per vCPU). Stopped-instance cost is EBS storage only, compute is not billed
+while stopped; the current benchmark box carries 130 GB of gp3 (30 GB root, 100 GB data) at $0.08/GB
+month, $10.40/month per machine, charged whether the machine is running or stopped.
+
+Multi-machine rows shard by vehicle, each machine processes an equal fraction of the fleet for the full
+week, running in parallel, then results are combined. Speed per machine is assumed to scale linearly
+with the smaller per-machine fleet share; this is the same assumption validated within about 3% for
+thread count, but not directly measured for fleet-share sharding. It is a conservative (upper bound on
+cost) assumption: the measured Manhattan-vs-full-fleet comparison suggests high-volume runs are
+somewhat *more* efficient per vehicle than low-volume ones, so actual sharded runs likely finish a bit
+faster and cost a bit less than the numbers below.
+
+| Configuration | vCPUs | Estimated speed | Wall-clock time for 1 week of data | Running cost | Stopped cost |
+| --- | --- | --- | --- | --- | --- |
+| 1x `c7i.12xlarge` (48 core) | 48 | 1.7x | 98.8 hours (4.1 days) | ~$212 | $10.40/month |
+| 1x `c7i.24xlarge` (96 core) | 96 | ~3.4x | 49.4 hours (2.1 days) | ~$212 | $10.40/month |
+| 2x `c7i.12xlarge`, fleet split in half | 96 (48 each) | ~3.4x combined | 49.4 hours (2.1 days) | ~$212 | $20.80/month |
+| 4x `c7i.12xlarge`, fleet split in quarters | 192 (48 each) | ~6.8x combined | 24.7 hours (1.0 day) | ~$212 | $41.60/month |
+
+The running cost is close to constant across every configuration, about $212 regardless of how many
+vCPUs or machines are used. This falls directly out of the linear-scaling assumption: doubling vCPUs
+(by any means, a bigger box or more boxes) roughly halves wall-clock time while roughly doubling the
+hourly rate paid, so the product, total cost, stays flat. What changes is turnaround time, not price.
+Going bigger or wider is close to free from a compute-cost standpoint; the real cost of more machines is
+the added stopped-storage bill (which scales with machine count) and, in the `c7i.24xlarge` case, the
+unconfirmed single-socket assumption from the section above.
+
+*Cross-check against Ranajay's plan doc (`Replay Test Harness Plan - ReplayDriver Version.md`,
+2026-08-13): its quarter-scale estimate, ~$3,100 on-demand for 90 days on `c7i.8xlarge` (32 vCPU,
+~5,800-bus fleet, 200 particles), normalizes to ~$241/week, within about 12% of the ~$212 above. The
+remaining gap tracks the fleet-size difference (5,800 vs. this doc's 4,939 measured vehicles), not a
+throughput disagreement.*
 
 ## Multithreaded determinism: root cause found and fixed
 
@@ -120,8 +161,8 @@ with this fix in place.
 
 ## Open items / what to check next
 
-- The `c7i.24xlarge` vs `c7i.48xlarge` socket boundary is inferred, not confirmed against AWS
-  documentation.
+- The `c7i.24xlarge` vs `c7i.48xlarge` socket boundary is corroborated by independent secondary sources
+  (Intel's chip spec, Nitro bare-metal write-ups), not stated outright in AWS's own documentation.
 - `REPLAY_THREADS=962` (the production default formula) has not been empirically tested; expected to be
   neutral-to-negative for replay throughput.
 - Particle count below 100 is untested; unclear where accuracy degrades enough to matter for a
