@@ -19,6 +19,7 @@ import java.math.BigDecimal;
 import java.text.DateFormat;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
+import java.time.Clock;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Collection;
@@ -102,6 +103,13 @@ public class VehicleLocationInferenceServiceImpl implements
 
   private static final long MIN_RECORD_INTERVAL_MILLIS = 3 * 1000;
 
+  /**
+   * Every in-path "now" read goes through this, so archived data can be replayed on data-time.
+   * Bean obaClock: Clock.systemUTC() in all profiles except replay, MutableClock under replay.
+   */
+  @Autowired
+  private Clock _clock;
+
   @Autowired
   private ObservationCache _observationCache;
 
@@ -131,9 +139,25 @@ public class VehicleLocationInferenceServiceImpl implements
   
   private BundleItem _lastBundle = null;
 
-  private ExecutorService _executorService;
-
-  private ThreadPoolExecutor _threadPoolExecutor;
+  /**
+   * One single-thread executor per stripe, selected by a hash of the vehicle id, rather than one
+   * shared pool that any thread may take any vehicle from.
+   *
+   * <p>A shared pool does not order a vehicle's own records. handleUpdateWithResults is
+   * synchronized, so two threads cannot interleave on one vehicle, but nothing decides which
+   * acquires the lock first: record N+1 can win, after which record N looks out of order and
+   * VehicleInferenceInstance:198 skips it. Live this never shows, because a vehicle reports every
+   * ~5.3 s and the previous record finished long before. Replaying an archive compresses five
+   * minutes into under a second, so a vehicle's records are in flight together - a 279-record replay
+   * skipped 255 of them, leaving 24.
+   *
+   * <p>The thread count is unchanged: N stripes of one thread is the same N threads, and different
+   * vehicles still run concurrently. Only the race within a vehicle goes away. A single-thread
+   * executor is FIFO, so submission order is execution order, and the stripe for a vehicle is the
+   * same on every run because AgencyAndId.hashCode() derives from its strings - which the
+   * reproducibility requirement depends on.
+   */
+  private ThreadPoolExecutor[] _stripes;
 
   private int _skippedUpdateLogCounter = 0;
 
@@ -194,13 +218,37 @@ public class VehicleLocationInferenceServiceImpl implements
   @PostConstruct
   public void start() {
     _maxFutureReceivedDiffMillis = -1 * TimeUnit.HOURS.toMillis(_maxFutureHours);
+
+    // A launch-time override, so a reproducibility problem can be bisected: with one stripe every
+    // vehicle is serialised in arrival order, so a difference that survives that is not interleaving.
+    final Integer threadOverride = Integer.getInteger("oba.inference.threads");
+    if (threadOverride != null && threadOverride > 0) {
+      _log.info("overriding processing threads " + _numberOfProcessingThreads + " -> "
+          + threadOverride + " (oba.inference.threads)");
+      _numberOfProcessingThreads = threadOverride;
+    }
+
     if (_numberOfProcessingThreads <= 0)
       throw new IllegalArgumentException(
           "numberOfProcessingThreads must be positive");
 
-    _log.info("Creating thread pool of size=" + _numberOfProcessingThreads);
-    _threadPoolExecutor = (ThreadPoolExecutor) Executors.newFixedThreadPool(_numberOfProcessingThreads);
-    _executorService = _threadPoolExecutor;
+    _log.info("Creating " + _numberOfProcessingThreads
+        + " single-thread stripes (one thread each; vehicles are hashed onto a stripe)");
+    // newFixedThreadPool(1), not newSingleThreadExecutor(): only the former returns a real
+    // ThreadPoolExecutor, and the throughput log below needs getActiveCount/getCompletedTaskCount.
+    _stripes = new ThreadPoolExecutor[_numberOfProcessingThreads];
+    for (int i = 0; i < _stripes.length; i++)
+      _stripes[i] = (ThreadPoolExecutor) Executors.newFixedThreadPool(1);
+
+    // Reproducibility needs a seed before the first record; setSeeds() is only reachable over HTTP.
+    // Zero keeps the historical behaviour: an arbitrary seed, not reproducible.
+    final long seed = Long.getLong("oba.inference.seed", 0L);
+    if (seed != 0L) {
+      InferenceRng.setGlobalSeed(seed);
+      _log.info("inference random streams seeded per vehicle from oba.inference.seed=" + seed);
+    } else {
+      _log.info("oba.inference.seed not set; random streams are not reproducible");
+    }
 
     try {
       final long sec = Long.parseLong(System.getProperty("oba.shed.maxAgeSec", "0"));
@@ -215,7 +263,70 @@ public class VehicleLocationInferenceServiceImpl implements
   
   @PreDestroy
   public void stop() {
-    _executorService.shutdownNow();
+    if (_stripes != null)
+      for (ThreadPoolExecutor stripe : _stripes)
+        stripe.shutdownNow();
+  }
+
+  /**
+   * Route a record to the stripe that owns its vehicle, so that vehicle's records run in submission
+   * order. See the _stripes field comment for why a shared pool cannot guarantee that.
+   */
+  private Future<?> submitForVehicle(AgencyAndId vehicleId, ProcessingTask task) {
+    int stripe = Math.floorMod(vehicleId.hashCode(), _stripes.length);
+    return _stripes[stripe].submit(task);
+  }
+
+  /** Fleet-wide totals across the stripes, for the throughput log in ProcessingTask.run(). */
+  public long stripesCompletedTaskCount() {
+    long n = 0;
+    for (ThreadPoolExecutor stripe : _stripes)
+      n += stripe.getCompletedTaskCount();
+    return n;
+  }
+
+  public int stripesActiveCount() {
+    int n = 0;
+    for (ThreadPoolExecutor stripe : _stripes)
+      n += stripe.getActiveCount();
+    return n;
+  }
+
+  /** Tasks queued but not started, plus tasks running, across every stripe. */
+  public int getOutstandingTaskCount() {
+    if (_stripes == null)
+      return 0;
+    int n = 0;
+    for (ThreadPoolExecutor stripe : _stripes)
+      n += stripe.getQueue().size() + stripe.getActiveCount();
+    return n;
+  }
+
+  /**
+   * Block until every submitted record has been processed, or the timeout expires. Returns true if
+   * the engine drained.
+   *
+   * <p>For replay. Submitting a record only queues it, so a driver that measures its own read loop
+   * measures dispatch, not inference - a 279-record fixture "finished" in 0.6 s while the particle
+   * filter was still working. Callers need a real completion signal both to report honest timings
+   * and to know when it is safe to flush output and exit.
+   *
+   * <p>Deliberately not on the VehicleLocationInferenceService interface: nothing in the live path
+   * should wait for the engine to go idle, because under a live feed it never does.
+   */
+  public boolean awaitIdle(long timeoutMs) {
+    long deadline = System.currentTimeMillis() + timeoutMs;
+    while (System.currentTimeMillis() < deadline) {
+      if (getOutstandingTaskCount() == 0)
+        return true;
+      try {
+        Thread.sleep(100);
+      } catch (InterruptedException ie) {
+        Thread.currentThread().interrupt();
+        return false;
+      }
+    }
+    return getOutstandingTaskCount() == 0;
   }
 
   protected void setPredictionIntegrationService(
@@ -263,8 +374,8 @@ public class VehicleLocationInferenceServiceImpl implements
     _nycTransitDataService.overrideCancelledTrips(record.getCancelledTripBeans());
     if (isValidRecord(record.getVehicleId(), record.getTimestamp())) {
       final VehicleInferenceInstance i = getInstanceForVehicle(record.getVehicleId());
-      final Future<?> result = _executorService.submit(new ProcessingTask(i,
-          record, true, false));
+      final Future<?> result = submitForVehicle(record.getVehicleId(),
+          new ProcessingTask(i, record, true, false));
       _bundleManagementService.registerInferenceProcessingThread(result);
     }
   }
@@ -281,8 +392,8 @@ public class VehicleLocationInferenceServiceImpl implements
     if (isValidRecord(record.getVehicleId(), record.getTimestamp())) {
       final VehicleInferenceInstance i = getInstanceForVehicle(record.getVehicleId());
 
-      final Future<?> result = _executorService.submit(new ProcessingTask(i,
-          record, true, true));
+      final Future<?> result = submitForVehicle(record.getVehicleId(),
+          new ProcessingTask(i, record, true, true));
       _bundleManagementService.registerInferenceProcessingThread(result);
     }
   }
@@ -298,8 +409,8 @@ public class VehicleLocationInferenceServiceImpl implements
     if (isValidRecord(record.getVehicleId(), record.getTime())) {
       final VehicleInferenceInstance i = getInstanceForVehicle(record.getVehicleId());
 
-      final Future<?> result = _executorService.submit(new ProcessingTask(i,
-          record, false, false));
+      final Future<?> result = submitForVehicle(record.getVehicleId(),
+          new ProcessingTask(i, record, false, false));
       _bundleManagementService.registerInferenceProcessingThread(result);
     }
   }
@@ -384,7 +495,10 @@ public class VehicleLocationInferenceServiceImpl implements
     }
     final DateTime time = XML_DATE_TIME_FORMAT.parseDateTime(message.getTimeReported());
     r.setTime(time.getMillis());
-    r.setTimeReceived(new Date().getTime());
+    // Not new Date(): under the replay profile the clock holds the record's own timestamp, so
+    // getBestTimestamp keeps device time and the filter's elapsed time reflects the real interval
+    // between fixes rather than how fast the archive is being replayed.
+    r.setTimeReceived(_clock.millis());
 
     // validate timestamp from bus--for debugging only
     final String RMCSentence = r.getRmc();
@@ -420,8 +534,8 @@ public class VehicleLocationInferenceServiceImpl implements
     }
     if (isValidRecord(r.getVehicleId(), r.getTime())) {
       final VehicleInferenceInstance i = getInstanceForVehicle(vehicleId);
-      final Future<?> result = _executorService.submit(new ProcessingTask(i, r,
-          false, false));
+      final Future<?> result = submitForVehicle(vehicleId,
+          new ProcessingTask(i, r, false, false));
       _bundleManagementService.registerInferenceProcessingThread(result);
     }
   }
@@ -748,8 +862,11 @@ public class VehicleLocationInferenceServiceImpl implements
       // Load-shedding: if this fix waited in the queue past the staleness threshold, skip the
       // (expensive) inference so the engine catches up to fresh data instead of processing a
       // minute-old position. Default off (_shedStaleMs=0). Skipped tasks still "complete" cheaply.
+      //
+      // "Now" comes from the injected clock, not System.currentTimeMillis(). The bean is
+      // Clock.systemUTC() in every profile except replay, so this is unchanged in production.
       if (_shedStaleMs > 0 && !_simulation && _nycRawLocationRecord != null
-          && (System.currentTimeMillis() - _nycRawLocationRecord.getTimeReceived()) > _shedStaleMs) {
+          && (_clock.millis() - _nycRawLocationRecord.getTimeReceived()) > _shedStaleMs) {
         final long n = _shedStaleCount.incrementAndGet();
         if (n % 1000 == 0)
           _log.warn("load-shedding: shedStaleTotal=" + n + " (skipping queued fixes older than "
@@ -757,6 +874,9 @@ public class VehicleLocationInferenceServiceImpl implements
               + _bundleManagementService.getInferenceProcessingThreadQueueSize());
         return;
       }
+      // Bind this thread to this vehicle's streams for the record, so draws depend on the vehicle
+      // rather than on which thread ran when. Released in the finally below.
+      InferenceRng.enter(_vehicleId);
     	try {
     		if (_simulation) {
     			setupSimulationBeforeRun();
@@ -813,12 +933,13 @@ public class VehicleLocationInferenceServiceImpl implements
     		stop = System.currentTimeMillis();
           _timeSpentByVehicleId.put(_vehicleId, (stop - start));
 
-            if (_threadPoolExecutor != null && _threadPoolExecutor.getCompletedTaskCount() % 1000 == 0) {
-              _log.warn("processing " + _threadPoolExecutor.getActiveCount()
+            if (_stripes != null && stripesCompletedTaskCount() % 1000 == 0) {
+              _log.warn("processing " + stripesActiveCount()
                       + " of " +  _numberOfProcessingThreads
                       + " with " + _vehicleInstancesByVehicleId.size()
-                      + " active vehicles and " + _bundleManagementService.getInferenceProcessingThreadQueueSize()
-                      + " outstanding threads not reaped"
+                      + " active vehicles and " + getOutstandingTaskCount()
+                      + " tasks pending (" + _bundleManagementService.getInferenceProcessingThreadQueueSize()
+                      + " futures held for bundle-switch tracking)"
                       + " with avg processing time " + computeProcessingTime(_timeSpentByVehicleId.values())
                       + "ms shedStaleTotal=" + _shedStaleCount.get()
               );
@@ -830,7 +951,10 @@ public class VehicleLocationInferenceServiceImpl implements
     		_log.error("Error processing new location record for inference on vehicle " + _vehicleId + ": ", ex);
             _log.error("Stack Trace: {}",ExceptionUtils.getFullStackTrace(ex));
     		resetVehicleLocation(_vehicleId);
-    		_observationCache.purge(_vehicleId);    	  
+    		_observationCache.purge(_vehicleId);
+    	} finally {
+    		// Must run on every path: otherwise the next vehicle on this stripe inherits these streams.
+    		InferenceRng.exit();
     	}
     }
 
@@ -949,7 +1073,7 @@ public class VehicleLocationInferenceServiceImpl implements
   }
 
   private long computeTimeDifference(long timestamp) {
-    return (System.currentTimeMillis() - timestamp) / 1000; // output in seconds
+    return (_clock.millis() - timestamp) / 1000; // output in seconds
   }
 
   private boolean isValidRecord(AgencyAndId vid, Long timeReceived) {
@@ -973,7 +1097,7 @@ public class VehicleLocationInferenceServiceImpl implements
 
         // Negative time means the timeSinceReceipt is in the future
         // Positive time means timeSinceReceipt is in the past
-        long timeSinceReceipt = System.currentTimeMillis() - timeReceived;
+        long timeSinceReceipt = _clock.millis() - timeReceived;
 
 
         if (timeSinceReceipt < _maxFutureReceivedDiffMillis){

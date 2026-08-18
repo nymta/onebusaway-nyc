@@ -58,7 +58,8 @@ import com.google.common.collect.Multiset.Entry;
  */
 public class ParticleFactoryImpl implements ParticleFactory<Observation> {
 
-  private static int _initialNumberOfParticles = 200;
+  // Override at launch with -Doba.particle.count=<n>, same convention as oba.inference.threads.
+  private static int _initialNumberOfParticles = Integer.getInteger("oba.particle.count", 200);
 
   private MotionModelImpl _motionModel;
   private BlocksFromObservationService _blocksFromObservationService;
@@ -106,23 +107,32 @@ public class ParticleFactoryImpl implements ParticleFactory<Observation> {
     }
   }
 
-  static private Random localRandom = new Random();
-
+  /**
+   * Seeds every vehicle's streams from one global seed. A single shared generator cannot be
+   * reproducible across threads however it is seeded - see InferenceRng.
+   */
   synchronized public static void setSeed(long seed) {
-    if (!ParticleFilter.getReproducibilityEnabled()) {
-      threadLocalRng = new LocalRandom(seed);
-    } else {
-      threadLocalRng = new LocalRandomDummy(seed);
-    }
-    localRandom.setSeed(seed);
+    InferenceRng.setGlobalSeed(seed);
   }
 
+  /** The calling vehicle's stream, or a shared fallback outside a vehicle scope. */
   public static Random getLocalRng() {
-    return localRandom;
+    return InferenceRng.local();
   }
+
+  /**
+   * Yields the current vehicle's stream, not the thread's, despite the ThreadLocal type. Allocated
+   * once because callers invoke it inside per-particle loops.
+   */
+  private static final ThreadLocal<RandomStream> VEHICLE_STREAM = new ThreadLocal<RandomStream>() {
+    @Override
+    public RandomStream get() {
+      return InferenceRng.stream();
+    }
+  };
 
   public static ThreadLocal<RandomStream> getThreadLocalRng() {
-    return threadLocalRng;
+    return VEHICLE_STREAM;
   }
 
   public static int getInitialNumberOfParticles() {
@@ -169,7 +179,10 @@ public class ParticleFactoryImpl implements ParticleFactory<Observation> {
 
       for (final BlockStateObservation blockState : potentialBlocks) {
         final SensorModelResult transProb = new SensorModelResult("transition");
-        final double inMotionSample = threadLocalRng.get().nextDouble();
+        // getThreadLocalRng(), not the static threadLocalRng field: that field holds one MRG32k3a
+        // shared by every thread, so concurrent vehicles interleave on it and each gets a different
+        // subsequence. This is the highest-volume draw site in the engine.
+        final double inMotionSample = ParticleFactoryImpl.getThreadLocalRng().get().nextDouble();
         final boolean vehicleNotMoved = inMotionSample < 0.5;
         final MotionState motionState = _motionModel.updateMotionState(obs,
             vehicleNotMoved);
