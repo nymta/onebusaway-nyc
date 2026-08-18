@@ -16,6 +16,8 @@
 
 package org.onebusaway.nyc.transit_data_federation.impl.nyc;
 import org.onebusaway.gtfs.model.AgencyAndId;
+import org.onebusaway.nyc.util.replay.ReplayDomain;
+import org.onebusaway.nyc.util.replay.Replayable;
 import org.onebusaway.nyc.transit_data_federation.model.nyc.SupplementalRouteType;
 import org.onebusaway.nyc.util.configuration.ConfigurationService;
 import org.onebusaway.nyc.util.impl.S3Utility;
@@ -166,6 +168,7 @@ public class NycRouteTypeService {
     }
 
 
+    @Replayable(ReplayDomain.TELEMETRY)
     public static class UpdateThread implements Runnable {
 
         private NycRouteTypeService resource;

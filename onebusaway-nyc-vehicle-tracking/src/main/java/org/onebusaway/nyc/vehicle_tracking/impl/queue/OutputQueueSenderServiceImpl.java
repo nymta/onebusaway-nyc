@@ -16,6 +16,8 @@
 package org.onebusaway.nyc.vehicle_tracking.impl.queue;
 
 import org.onebusaway.container.refresh.Refreshable;
+import org.onebusaway.nyc.util.replay.ReplayDomain;
+import org.onebusaway.nyc.util.replay.Replayable;
 import org.onebusaway.nyc.queue.DNSResolver;
 import org.onebusaway.nyc.transit_data.model.NycQueuedInferredLocationBean;
 import org.onebusaway.nyc.util.configuration.ConfigurationService;
@@ -212,6 +214,7 @@ public class OutputQueueSenderServiceImpl implements OutputQueueSenderService,
     }
   }
 
+  @Replayable(ReplayDomain.OUTPUT)
   private class OutputQueueCheckThread extends TimerTask {
 
     @Override
@@ -228,6 +231,7 @@ public class OutputQueueSenderServiceImpl implements OutputQueueSenderService,
     }
   }
 
+  @Replayable(ReplayDomain.OUTPUT)
   private class PrimaryCheckThread extends TimerTask {
 
     @Override

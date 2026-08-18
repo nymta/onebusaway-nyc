@@ -36,6 +36,8 @@ import javax.annotation.PreDestroy;
 import net.sf.ehcache.CacheManager;
 
 import org.onebusaway.container.refresh.RefreshService;
+import org.onebusaway.nyc.util.replay.ReplayDomain;
+import org.onebusaway.nyc.util.replay.Replayable;
 import org.onebusaway.container.refresh.Refreshable;
 import org.onebusaway.gtfs.model.AgencyAndId;
 import org.onebusaway.gtfs.model.calendar.ServiceDate;
@@ -565,6 +567,7 @@ public class BundleManagementServiceImpl implements BundleManagementService {
 		return (_inferenceProcessingThreads.size() == 0);
 	}
 
+	@Replayable(ReplayDomain.BUNDLE)
 	protected class BundleSwitchUpdateThread extends TimerTask implements Trigger {
 
 		// required for subclass
@@ -618,6 +621,7 @@ public class BundleManagementServiceImpl implements BundleManagementService {
 		return calendar.getTime();
 	}
 
+	@Replayable(ReplayDomain.BUNDLE)
 	protected class BundleDiscoveryUpdateThread extends TimerTask implements Trigger {
 
 		// required for subclass

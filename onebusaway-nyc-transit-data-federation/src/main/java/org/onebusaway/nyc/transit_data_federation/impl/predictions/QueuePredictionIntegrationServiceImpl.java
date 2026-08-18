@@ -16,6 +16,7 @@
 
 package org.onebusaway.nyc.transit_data_federation.impl.predictions;
 
+import java.time.Clock;
 import java.util.*;
 import java.util.Map.Entry;
 import java.util.concurrent.ConcurrentMap;
@@ -81,6 +82,9 @@ public class QueuePredictionIntegrationServiceImpl extends
 	private int predictionRecordCountInterval = 2000;
 	private long predictionRecordAverageLatency = 0;
 	private Long _serviceTime = null; // leave empty for now, set for tests
+
+	@Autowired(required = false)
+	private Clock _clock;
 
 	public void setCheckPredictionAge(Boolean checkAge) {
 		_checkPredictionAge = checkAge;
@@ -236,7 +240,7 @@ public class QueuePredictionIntegrationServiceImpl extends
 		if (_serviceTime != null) {
 			return _serviceTime;
 		}
-		return System.currentTimeMillis();
+		return _clock != null ? _clock.millis() : System.currentTimeMillis();
 	}
 	@Override
 	public void updatePredictionsForVehicle(AgencyAndId vehicleId) {
@@ -339,7 +343,7 @@ public class QueuePredictionIntegrationServiceImpl extends
 
 
 	protected long computeTimeDifference(long timestamp) {
-		return (System.currentTimeMillis() - timestamp) / 1000; // output in seconds
+		return (getTime() - timestamp) / 1000; // output in seconds
 	}
 
 	public void setTransitDataService(TransitDataService transitDataService) {

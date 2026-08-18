@@ -17,6 +17,8 @@
 package org.onebusaway.nyc.transit_data_federation.impl.capi;
 
 import org.onebusaway.container.refresh.Refreshable;
+import org.onebusaway.nyc.util.replay.ReplayDomain;
+import org.onebusaway.nyc.util.replay.Replayable;
 
 import org.onebusaway.nyc.transit_data_federation.services.capi.CapiDao;
 import org.onebusaway.nyc.util.configuration.ConfigurationService;
@@ -114,6 +116,7 @@ public class CapiDaoHttpImpl implements CapiDao {
         }
     }
 
+    @Replayable(ReplayDomain.CONFIG)
     public static class ConfigThread implements Runnable {
         private CapiDaoHttpImpl resource;
         public ConfigThread(CapiDaoHttpImpl resource) {

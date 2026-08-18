@@ -20,6 +20,8 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.onebusaway.container.refresh.Refreshable;
+import org.onebusaway.nyc.util.replay.ReplayDomain;
+import org.onebusaway.nyc.util.replay.Replayable;
 import org.onebusaway.exceptions.ServiceException;
 import org.onebusaway.gtfs.model.AgencyAndId;
 import org.onebusaway.nyc.transit_data.services.NycTransitDataService;
@@ -131,6 +133,7 @@ public abstract class HTTPListenerTask{
 
     abstract void updateData();
 
+    @Replayable(ReplayDomain.TELEMETRY)
     public static class UpdateThread implements Runnable {
 
         private HTTPListenerTask resource;
@@ -151,6 +154,7 @@ public abstract class HTTPListenerTask{
         }
     }
 
+    @Replayable(ReplayDomain.CONFIG)
     public static class ConfigThread implements Runnable {
         private HTTPListenerTask resource;
         public ConfigThread(HTTPListenerTask resource) {

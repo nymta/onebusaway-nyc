@@ -22,6 +22,8 @@ import org.apache.commons.lang.StringUtils;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.onebusaway.container.refresh.Refreshable;
+import org.onebusaway.nyc.util.replay.ReplayDomain;
+import org.onebusaway.nyc.util.replay.Replayable;
 import org.onebusaway.gtfs.model.AgencyAndId;
 import org.onebusaway.nyc.queue.model.RealtimeEnvelope;
 import org.onebusaway.nyc.transit_data.model.NycQueuedInferredLocationBean;
@@ -299,6 +301,7 @@ public class UnassignedVehicleServiceImpl implements UnassignedVehicleService {
         }
     }
 
+    @Replayable(ReplayDomain.INFERENCE_INPUT)
     private class UpdateThread extends TimerTask {
         @Override
         public void run() {
@@ -563,6 +566,7 @@ public class UnassignedVehicleServiceImpl implements UnassignedVehicleService {
         return inferredLocationBean;
     }
 
+    @Replayable(ReplayDomain.CONFIG)
     private class ConfigThread implements Runnable {
         private UnassignedVehicleServiceImpl impl = null;
         public ConfigThread(UnassignedVehicleServiceImpl impl) {

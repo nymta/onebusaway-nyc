@@ -1,6 +1,8 @@
 package org.onebusaway.nyc.transit_data_federation.impl.nyc;
 
 import org.onebusaway.nyc.transit_data.services.NycTransitDataService;
+import org.onebusaway.nyc.util.replay.ReplayDomain;
+import org.onebusaway.nyc.util.replay.Replayable;
 import org.onebusaway.realtime.api.VehicleOccupancyRecord;
 import org.onebusaway.transit_data.model.AgencyWithCoverageBean;
 import org.onebusaway.transit_data.model.ListBean;
@@ -18,6 +20,7 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 @Component
+@Replayable(ReplayDomain.TELEMETRY)
 public class ApcVerificationServiceTask implements Runnable {
 
     private static final Logger _log = LoggerFactory.getLogger(ApcVerificationServiceTask.class);

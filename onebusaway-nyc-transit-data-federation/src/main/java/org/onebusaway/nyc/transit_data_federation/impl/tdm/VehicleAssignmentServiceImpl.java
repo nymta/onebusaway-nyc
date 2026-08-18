@@ -17,6 +17,8 @@
 package org.onebusaway.nyc.transit_data_federation.impl.tdm;
 
 import org.onebusaway.container.refresh.Refreshable;
+import org.onebusaway.nyc.util.replay.ReplayDomain;
+import org.onebusaway.nyc.util.replay.Replayable;
 import org.onebusaway.gtfs.model.AgencyAndId;
 
 import org.onebusaway.nyc.transit_data_federation.services.tdm.VehicleAssignmentService;
@@ -131,6 +133,7 @@ public class VehicleAssignmentServiceImpl implements VehicleAssignmentService {
     }
   }
 
+  @Replayable(ReplayDomain.OUTPUT)
   private class UpdateThread extends TimerTask {
     @Override
     public void run() {

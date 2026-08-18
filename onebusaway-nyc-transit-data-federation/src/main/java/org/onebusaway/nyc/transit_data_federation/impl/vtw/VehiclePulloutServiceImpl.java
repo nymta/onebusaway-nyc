@@ -35,6 +35,8 @@ import com.amazonaws.util.json.JSONObject;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.joda.time.DateTime;
 import org.onebusaway.container.refresh.Refreshable;
+import org.onebusaway.nyc.util.replay.ReplayDomain;
+import org.onebusaway.nyc.util.replay.Replayable;
 import org.onebusaway.gtfs.model.AgencyAndId;
 import org.onebusaway.nyc.transit_data_federation.impl.util.TcipUtil;
 import org.onebusaway.nyc.transit_data_federation.services.vtw.VehiclePulloutService;
@@ -169,6 +171,7 @@ public class VehiclePulloutServiceImpl implements VehiclePulloutService {
     }
   }
 
+  @Replayable(ReplayDomain.INFERENCE_INPUT)
   private class UpdateThread extends TimerTask {
     @Override
     public void run() {

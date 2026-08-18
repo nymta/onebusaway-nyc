@@ -16,6 +16,8 @@
 package org.onebusaway.nyc.transit_data_federation.impl.nyc;
 
 import org.onebusaway.gtfs.model.AgencyAndId;
+import org.onebusaway.nyc.util.replay.ReplayDomain;
+import org.onebusaway.nyc.util.replay.Replayable;
 import org.onebusaway.nyc.transit_data.model.NycVehicleLoadBean;
 import org.onebusaway.nyc.transit_data_federation.model.nyc.SupplementalRouteType;
 import org.onebusaway.nyc.util.configuration.ConfigurationService;
@@ -178,6 +180,7 @@ public class ApcLoadLevelCalculator {
   }
 
 
+  @Replayable(ReplayDomain.TELEMETRY)
   public static class UpdateThread implements Runnable {
 
     private ApcLoadLevelCalculator resource;

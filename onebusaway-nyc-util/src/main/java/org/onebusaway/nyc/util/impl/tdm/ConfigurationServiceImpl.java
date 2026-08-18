@@ -27,6 +27,8 @@ import javax.annotation.PostConstruct;
 
 import org.apache.commons.lang.StringUtils;
 import org.onebusaway.container.refresh.RefreshService;
+import org.onebusaway.nyc.util.replay.ReplayDomain;
+import org.onebusaway.nyc.util.replay.Replayable;
 import org.onebusaway.nyc.util.configuration.ConfigurationService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -86,6 +88,7 @@ public class ConfigurationServiceImpl implements ConfigurationService {
 		}
 	}
 
+	@Replayable(ReplayDomain.CONFIG)
 	private class UpdateThread implements Runnable {
 		@Override
 		public void run() {

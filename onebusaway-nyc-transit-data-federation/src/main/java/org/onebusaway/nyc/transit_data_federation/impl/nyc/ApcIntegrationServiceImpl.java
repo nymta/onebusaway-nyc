@@ -25,6 +25,8 @@ import org.apache.http.params.BasicHttpParams;
 import org.apache.http.params.HttpConnectionParams;
 import org.apache.http.params.HttpParams;
 import org.onebusaway.gtfs.model.AgencyAndId;
+import org.onebusaway.nyc.util.replay.ReplayDomain;
+import org.onebusaway.nyc.util.replay.Replayable;
 import org.onebusaway.nyc.transit_data.model.NycVehicleLoadBean;
 import org.onebusaway.nyc.transit_data.services.NycTransitDataService;
 import org.onebusaway.nyc.transit_data_federation.impl.queue.ApcQueueListenerTask;
@@ -134,6 +136,7 @@ public class ApcIntegrationServiceImpl extends ApcQueueListenerTask {
         return vor;
     }
 
+    @Replayable(ReplayDomain.TELEMETRY)
     public static class RawCountWebServicePollerThread extends Thread {
         private NycTransitDataService tds;
         private BlockLocationService blockLocationService;
