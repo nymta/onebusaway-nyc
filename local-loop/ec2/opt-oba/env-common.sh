@@ -6,3 +6,6 @@ export JETTY=org.eclipse.jetty:jetty-maven-plugin:9.4.51.v20230217:run
 export MAIN=/opt/oba/onebusaway-nyc
 export PRED=/opt/oba/onebusaway-nyc-predictions
 gp(){ aws ssm get-parameter --name "$1" --with-decryption --query 'Parameter.Value' --output text; }
+# Host-local overrides (deadband, archiver prefix, ...). Not installed by deploy.sh, so each
+# host keeps its own values across deploys; absent = stock behavior.
+[ -f /opt/oba/env-local.sh ] && source /opt/oba/env-local.sh
