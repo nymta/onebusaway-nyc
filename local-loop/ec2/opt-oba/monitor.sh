@@ -2,7 +2,11 @@
 # Emit OBA/Prod CloudWatch custom metrics. Run by oba-monitor.timer (~every 2 min).
 set -uo pipefail
 export AWS_DEFAULT_REGION=us-east-1
-IID=i-0386b6bb8338b2f67
+# Instance id from IMDSv2 so the same script serves every host (falls back to the
+# original host's id only if IMDS is unreachable, which should not happen on EC2).
+TOK=$(curl -s -X PUT -H "X-aws-ec2-metadata-token-ttl-seconds: 60" http://169.254.169.254/latest/api/token)
+IID=$(curl -s -H "X-aws-ec2-metadata-token: $TOK" http://169.254.169.254/latest/meta-data/instance-id)
+[ -n "$IID" ] || IID=i-0386b6bb8338b2f67
 NS=OBA/Prod
 now=$(date +%s)
 
