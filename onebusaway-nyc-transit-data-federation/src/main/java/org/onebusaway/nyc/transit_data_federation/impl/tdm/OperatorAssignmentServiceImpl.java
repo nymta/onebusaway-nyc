@@ -17,6 +17,8 @@
 package org.onebusaway.nyc.transit_data_federation.impl.tdm;
 
 import org.onebusaway.container.refresh.Refreshable;
+import org.onebusaway.nyc.util.replay.ReplayDomain;
+import org.onebusaway.nyc.util.replay.Replayable;
 import org.onebusaway.gtfs.model.AgencyAndId;
 import org.onebusaway.gtfs.model.calendar.ServiceDate;
 
@@ -186,6 +188,7 @@ public class OperatorAssignmentServiceImpl implements OperatorAssignmentService 
     return Math.abs(now.getAsDate().getTime() - serviceDate.getAsDate().getTime()) < MAX_SERVICE_DATE_DELTA; 
   }
   
+  @Replayable(ReplayDomain.INFERENCE_INPUT)
   private class UpdateThread implements Runnable {
     @Override
     public void run() {

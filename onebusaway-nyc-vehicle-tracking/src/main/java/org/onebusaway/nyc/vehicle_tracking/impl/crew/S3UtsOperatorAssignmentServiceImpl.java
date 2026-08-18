@@ -1,6 +1,7 @@
 package org.onebusaway.nyc.vehicle_tracking.impl.crew;
 
 import java.io.File;
+import java.time.Clock;
 import java.util.Calendar;
 import java.util.Collection;
 import java.util.Date;
@@ -22,6 +23,8 @@ import org.onebusaway.nyc.transit_data_federation.model.tdm.OperatorAssignmentIt
 import org.onebusaway.nyc.transit_data_federation.services.tdm.OperatorAssignmentService;
 import org.onebusaway.nyc.transit_data_manager.adapters.api.processes.UtsCrewAssignmentParser;
 import org.onebusaway.nyc.transit_data_manager.adapters.output.model.json.OperatorAssignment;
+import org.onebusaway.nyc.util.replay.ReplayDomain;
+import org.onebusaway.nyc.util.replay.Replayable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -41,9 +44,19 @@ public class S3UtsOperatorAssignmentServiceImpl implements OperatorAssignmentSer
   private volatile Map<ServiceDate, HashMap<String, OperatorAssignmentItem>> _serviceDateToOperatorListMap =
       new HashMap<ServiceDate, HashMap<String, OperatorAssignmentItem>>();
 
+  private final Object _refreshLock = new Object();
+
   private volatile Date _lastS3Modified = null;
   private File _localCisFile;
   private Set<ServiceDate> _testServiceDates;
+
+  /** Directory of prefetched archive snapshots. Set for replay; unset in production. */
+  private static final String SNAPSHOT_DIR_PROPERTY = "oba.crew.snapshotDir";
+
+  private volatile CrewSnapshotIndex _snapshotIndex;
+
+  /** The snapshot whose contents are in the map, so a change of snapshot means a reload is due. */
+  private volatile File _activeSnapshot;
 
   private S3UtsCrewAssignmentFetcher _fetcher = new S3UtsCrewAssignmentFetcher();
 
@@ -51,6 +64,13 @@ public class S3UtsOperatorAssignmentServiceImpl implements OperatorAssignmentSer
 
   @Autowired
   private ThreadPoolTaskScheduler _taskScheduler;
+
+  /**
+   * Bean obaClock: Clock.systemUTC() in every profile except replay, MutableClock under replay. Not
+   * required, so tests can construct this class without a Spring context.
+   */
+  @Autowired(required = false)
+  private Clock _clock;
 
   /** Visible for tests. */
   void setFetcher(S3UtsCrewAssignmentFetcher fetcher) {
@@ -69,6 +89,19 @@ public class S3UtsOperatorAssignmentServiceImpl implements OperatorAssignmentSer
 
   @PostConstruct
   private void startUpdateProcess() {
+    String snapshotDir = System.getProperty(SNAPSHOT_DIR_PROPERTY, "").trim();
+    if (!snapshotDir.isEmpty()) {
+      try {
+        _snapshotIndex = new CrewSnapshotIndex(new File(snapshotDir));
+      } catch (Exception e) {
+        throw new IllegalStateException(SNAPSHOT_DIR_PROPERTY + "=" + snapshotDir + " is unusable", e);
+      }
+      // No startup fetch and no timer: the roster is a function of the clock, reloaded by getMap()
+      // when the clock crosses into the next snapshot.
+      _log.info("UTS roster follows the replay clock over {} snapshots in {}",
+          _snapshotIndex.size(), snapshotDir);
+      return;
+    }
     refreshData();
     int seconds = 30 * 60;
     String interval = System.getProperty("oba.crew.refreshIntervalSec");
@@ -80,12 +113,15 @@ public class S3UtsOperatorAssignmentServiceImpl implements OperatorAssignmentSer
       }
     }
     _log.info("UTS S3 crew refresh interval={}s", seconds);
-    _updateTask = _taskScheduler.scheduleWithFixedDelay(new Runnable() {
-      @Override
-      public void run() {
-        refreshData();
-      }
-    }, seconds * 1000L);
+    _updateTask = _taskScheduler.scheduleWithFixedDelay(new CrewRefreshTask(), seconds * 1000L);
+  }
+
+  @Replayable(ReplayDomain.INFERENCE_INPUT)
+  private class CrewRefreshTask implements Runnable {
+    @Override
+    public void run() {
+      refreshData();
+    }
   }
 
   @PreDestroy
@@ -95,13 +131,29 @@ public class S3UtsOperatorAssignmentServiceImpl implements OperatorAssignmentSer
     }
   }
 
+  // Skips UTS entirely: both the scheduled refresh and the cache-miss refresh in getMap(). A miss has
+  // no negative caching, so a roster the bucket cannot supply is re-fetched on every lookup.
+  private static final boolean DISABLED = Boolean.getBoolean("oba.crew.disabled");
+
   public void refreshData() {
+    if (DISABLED)
+      return;
+    synchronized (_refreshLock) {
+      refreshDataLocked();
+    }
+  }
+
+  private void refreshDataLocked() {
     try {
       File cisFile = resolveCisFile();
       if (cisFile == null || !cisFile.exists()) {
         _log.error("UTS CIS file unavailable; operator assignments not refreshed");
         return;
       }
+
+      // Marked before parsing: a parse failure must not leave the snapshot due, or every subsequent
+      // record retries it.
+      _activeSnapshot = cisFile;
 
       Map<ServiceDate, HashMap<String, OperatorAssignmentItem>> updated =
           new HashMap<ServiceDate, HashMap<String, OperatorAssignmentItem>>();
@@ -118,12 +170,24 @@ public class S3UtsOperatorAssignmentServiceImpl implements OperatorAssignmentSer
         }
       }
 
-      synchronized (_serviceDateToOperatorListMap) {
-        _serviceDateToOperatorListMap = updated;
-      }
+      _serviceDateToOperatorListMap = updated;
     } catch (Exception e) {
       _log.error("UTS crew refresh failed: {}", e.getMessage(), e);
     }
+  }
+
+  /** The snapshot that was current at the clock's instant, or null outside snapshot mode. */
+  private File snapshotDue() {
+    CrewSnapshotIndex index = _snapshotIndex;
+    if (index == null) {
+      return null;
+    }
+    return index.asOf(_clock != null ? _clock.millis() : System.currentTimeMillis());
+  }
+
+  private boolean reloadDue() {
+    File due = snapshotDue();
+    return due != null && !due.equals(_activeSnapshot);
   }
 
   private HashMap<String, OperatorAssignmentItem> toItems(HashMap<String, OperatorAssignment> parsed) {
@@ -165,6 +229,9 @@ public class S3UtsOperatorAssignmentServiceImpl implements OperatorAssignmentSer
     if (_localCisFile != null) {
       return _localCisFile;
     }
+    if (_snapshotIndex != null) {
+      return snapshotDue();
+    }
     String cachePath = System.getProperty("oba.crew.cacheFile", "/tmp/oba-uts-cis.csv");
     File target = new File(cachePath);
     File downloaded = _fetcher.downloadIfChanged(_lastS3Modified, target);
@@ -172,12 +239,25 @@ public class S3UtsOperatorAssignmentServiceImpl implements OperatorAssignmentSer
     return downloaded;
   }
 
+  /**
+   * "Now" for service-date purposes. Reads the injected clock rather than the wall clock, so that a
+   * replay of archived data loads the roster for the dates the records carry. Falls back to the wall
+   * clock when the field is unset, which is the case for tests that construct this class directly.
+   */
+  private Calendar nowCalendar() {
+    Calendar cal = Calendar.getInstance();
+    if (_clock != null) {
+      cal.setTimeInMillis(_clock.millis());
+    }
+    return cal;
+  }
+
   private Set<ServiceDate> applicableServiceDates() {
     if (_testServiceDates != null) {
       return _testServiceDates;
     }
     Set<ServiceDate> dates = new HashSet<ServiceDate>();
-    Calendar cal = Calendar.getInstance();
+    Calendar cal = nowCalendar();
     dates.add(new ServiceDate(cal.getTime()));
     cal.add(Calendar.DAY_OF_YEAR, -1);
     dates.add(new ServiceDate(cal.getTime()));
@@ -190,7 +270,7 @@ public class S3UtsOperatorAssignmentServiceImpl implements OperatorAssignmentSer
     if (serviceDate == null) {
       return false;
     }
-    Calendar cal = Calendar.getInstance();
+    Calendar cal = nowCalendar();
     ServiceDate now = new ServiceDate(cal.get(Calendar.YEAR), cal.get(Calendar.MONTH) + 1,
         cal.get(Calendar.DAY_OF_MONTH));
     return Math.abs(now.getAsDate().getTime() - serviceDate.getAsDate().getTime()) < MAX_SERVICE_DATE_DELTA;
@@ -218,13 +298,23 @@ public class S3UtsOperatorAssignmentServiceImpl implements OperatorAssignmentSer
       return null;
     }
     HashMap<String, OperatorAssignmentItem> list = _serviceDateToOperatorListMap.get(serviceDate);
-    if (list != null) {
+    if (list != null && !reloadDue()) {
       return list;
     }
-    synchronized (_serviceDateToOperatorListMap) {
+    synchronized (_refreshLock) {
+      if (reloadDue()) {
+        refreshDataLocked();
+      }
       list = _serviceDateToOperatorListMap.get(serviceDate);
       if (list != null) {
         return list;
+      }
+      if (DISABLED)
+        return null;
+      if (_snapshotIndex != null) {
+        // Already loaded the snapshot the clock selects, so this date is genuinely absent from it.
+        // Re-reading would repeat the parse on every record.
+        return null;
       }
       refreshData();
       return _serviceDateToOperatorListMap.get(serviceDate);
