@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+# Replay archived bustechGps chunks from S3 through the inference engine, writing inferred output
+# back to S3. Decoupled from the predictions engine: no ZMQ, no observer, no broker.
+#
+# Usage:
+#   run-replay.sh --prefix s3://mtalirr/data-archiver/bustechGps/ [--from D[/HH-MM]] [--to D[/HH-MM]]
+#                 [--limit N] [extra -D args...]     (D = YYYY-MM-DD, HH-MM = ET slot start)
+#   run-replay.sh s3://BUCKET/key1.jsonl.gz [s3://BUCKET/key2.jsonl.gz ...] [extra -D args...]
+#
+# Environment:
+#   REPLAY_OUT_S3     s3://bucket/prefix for inference output parts (default: none, spool stays local)
+#   REPLAY_CREW_DIR   prefetched UTS snapshots (default /data/uts-snapshots; fetch with
+#                     local-loop/replay/fetch-crew-snapshots.sh). Unset dir -> crew disabled.
+#   REPLAY_THREADS    inference stripes (default: vCPU count minus 2, for the reader and the JVM)
+#
+# Chunks are fed through a FIFO in the order given (--prefix sorts keys, chronological for the
+# archive's naming), so multi-chunk windows replay as one continuous stream and nothing is staged
+# on disk. The instance profile provides S3 credentials for both directions.
+set -uo pipefail
+source /opt/oba/env-common.sh
+export MAVEN_OPTS="${REPLAY_MAVEN_OPTS:--Xmx30g} -Duser.timezone=America/New_York"
+
+# Leave 2 vCPUs free for the reader thread and JVM/OS overhead; never go below 1 stripe.
+REPLAY_THREADS_DEFAULT=$(getconf _NPROCESSORS_ONLN)
+[ "$REPLAY_THREADS_DEFAULT" -gt 3 ] && REPLAY_THREADS_DEFAULT=$((REPLAY_THREADS_DEFAULT - 2))
+
+SOURCES=(); MVN_EXTRA=(); PREFIX=""; LIMIT=0; FROM=""; TO=""; TO_RAW=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --prefix) PREFIX="$2"; shift 2 ;;
+    --limit)  LIMIT="$2"; shift 2 ;;
+    --from)   FROM="$2"; shift 2 ;;
+    --to)     TO="$2"; TO_RAW="$2"; shift 2 ;;
+    s3://*)   SOURCES+=("$1"); shift ;;
+    -D*)      MVN_EXTRA+=("$1"); shift ;;
+    *) echo "unrecognized argument: $1" >&2; exit 2 ;;
+  esac
+done
+
+if [ -n "$PREFIX" ]; then
+  bucket="${PREFIX#s3://}"; bucket="${bucket%%/*}"
+  key="${PREFIX#s3://$bucket/}"
+  # Keys are <feed>/<YYYY-MM-DD>/HH-MM.jsonl.gz with the slot named by its ET start, so lexicographic
+  # order is chronological and bounds are plain string comparisons.
+  keys=$(aws s3api list-objects-v2 --bucket "$bucket" --prefix "$key" \
+           --query 'Contents[].Key' --output text | tr '\t' '\n' \
+           | grep -E '\.jsonl(\.gz)?$' | sort)
+  [ -n "$keys" ] || { echo "no .jsonl objects under $PREFIX" >&2; exit 2; }
+  if [ -n "$FROM" ] || [ -n "$TO" ]; then
+    # Bounds are "YYYY-MM-DD" or "YYYY-MM-DD/HH-MM" (slot start, ET); date-only --to covers the day.
+    case "$TO" in */*) : ;; ?*) TO="$TO/23-59" ;; esac
+    keys=$(printf '%s\n' "$keys" | awk -F/ -v a="$FROM" -v b="$TO" '{
+        f=$NF; sub(/\..*$/, "", f); c=$(NF-1)"/"f
+      } (a=="" || c>=a) && (b=="" || c<=b)')
+    [ -n "$keys" ] || { echo "no objects in [$FROM..$TO] under $PREFIX" >&2; exit 2; }
+  fi
+  [ "$LIMIT" -gt 0 ] && keys=$(printf '%s\n' "$keys" | head -n "$LIMIT")
+  while IFS= read -r k; do SOURCES+=("s3://$bucket/$k"); done <<< "$keys"
+fi
+[ "${#SOURCES[@]}" -gt 0 ] || { sed -n '2,18p' "$0"; exit 2; }
+
+# Run label from the window bounds, or from the first/last source when explicit URIs were given.
+slot_of() {
+  local u="${1%.jsonl.gz}"; u="${u%.jsonl}"
+  local day; day="$(basename "$(dirname "$u")")"
+  case "$day" in
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) echo "${day}_$(basename "$u")" ;;
+    *) basename "$u" ;;
+  esac
+}
+if [ -n "$FROM" ] || [ -n "$TO_RAW" ]; then
+  A="${FROM:-open}"; B="${TO_RAW:-open}"
+else
+  A="$(slot_of "${SOURCES[0]}")"; B="$(slot_of "${SOURCES[${#SOURCES[@]}-1]}")"
+fi
+LABEL="$(echo "$A" | tr / _)-to-$(echo "$B" | tr / _)-$(date -u +%Y%m%dT%H%M%SZ)"
+
+# Crew snapshots for the window, fetched if missing (cached days skipped). Slots are ET, crew
+# prefixes UTC generation dates; ET evening slots cross into the next UTC day, so the range is
+# [from .. to+1]. REPLAY_SKIP_CREW_FETCH=1 uses the dir as-is.
+CREW_DIR="${REPLAY_CREW_DIR:-/data/uts-snapshots}"
+if [ "${REPLAY_SKIP_CREW_FETCH:-0}" != "1" ]; then
+  d1="${A%%[/_]*}"; d2="${B%%[/_]*}"; [ "$d2" = "open" ] && d2="$d1"
+  case "$d1" in
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9])
+      next_day() { date -d "$1 +1 day" +%Y-%m-%d 2>/dev/null || date -j -v+1d -f %Y-%m-%d "$1" +%Y-%m-%d; }
+      "$MAIN/local-loop/replay/fetch-crew-snapshots.sh" "$d1" "$(next_day "$d2")" -o "$CREW_DIR" \
+        || echo "WARNING: crew fetch failed; replay uses whatever is already in $CREW_DIR" >&2
+      ;;
+    *) echo "WARNING: no date in '$A' to derive crew window from; skipping crew fetch" >&2 ;;
+  esac
+fi
+if [ -d "$CREW_DIR" ]; then
+  CREW_ARGS=(-Doba.crew.snapshotDir="$CREW_DIR")
+else
+  echo "WARNING: no crew snapshots at $CREW_DIR; running with crew disabled" >&2
+  CREW_ARGS=(-Doba.crew.disabled=true)
+fi
+
+OUT_DIR="${REPLAY_OUT_DIR:-/data/replay-out/$LABEL}"
+mkdir -p "$OUT_DIR"
+OUT_S3="${REPLAY_OUT_S3:-s3://ds-oba/replay/inference-outputs/$LABEL/}"
+OUT_ARGS=(-Doba.replay.output.dir="$OUT_DIR")
+
+# The engine spools parts and renames each on completion; the CLI uploads them (the engine's bundled
+# AWS SDK is from 2012 and cannot sign for modern buckets). Rolling, so days-long runs do not fill
+# the disk. REPLAY_OUT_S3=none keeps parts local.
+upload_parts() {
+  local f
+  for f in "$OUT_DIR"/inferred-*.ndjson "$OUT_DIR"/inferred-*.ndjson.gz; do
+    [ -f "$f" ] || continue
+    aws s3 mv "$f" "$OUT_S3" --only-show-errors && echo "uploaded $(basename "$f")"
+  done
+}
+UPLOAD_PID=""
+if [ "$OUT_S3" != "none" ]; then
+  ( while :; do sleep 30; upload_parts; done ) > "$OUT_DIR/upload.log" 2>&1 &
+  UPLOAD_PID=$!
+fi
+
+FIFO="/tmp/oba-replay-$$.fifo"
+rm -f "$FIFO"; mkfifo "$FIFO"
+FEED_PID=""
+cleanup() {
+  [ -n "$FEED_PID" ] && kill "$FEED_PID" 2>/dev/null
+  [ -n "$UPLOAD_PID" ] && kill "$UPLOAD_PID" 2>/dev/null
+  rm -f "$FIFO"
+}
+trap cleanup EXIT INT TERM
+
+echo "sources : ${#SOURCES[@]} chunk(s)"
+for s in "${SOURCES[@]}"; do echo "          $s"; done
+echo "output  : $OUT_DIR$([ "$OUT_S3" != "none" ] && echo " -> $OUT_S3")"
+echo
+
+(
+  for s in "${SOURCES[@]}"; do
+    t0=$(date +%s)
+    case "$s" in
+      *.gz) aws s3 cp "$s" - | gzip -dc ;;
+      *)    aws s3 cp "$s" - ;;
+    esac || { echo "FEED FAILED on $s; aborting so the gap is not silent" >&2; exit 1; }
+    echo "fed $s in $(( $(date +%s) - t0 ))s" >&2
+  done
+  echo "feed complete: ${#SOURCES[@]} object(s)" >&2
+) > "$FIFO" 2> "$OUT_DIR/feed.log" &
+FEED_PID=$!
+
+cd "$MAIN/onebusaway-nyc-vehicle-tracking-webapp"
+mvn -B -P local-ie-testing -DskipTests -Dlicense.skip=true \
+  -Dspring.profiles.active=replay \
+  -Die.listener=ReplayFileInputTask \
+  -Dreplay.file="$FIFO" \
+  -Dreplay.exitWhenDone=true \
+  -Die.output.queue=S3OutputQueueSenderServiceImpl \
+  "${OUT_ARGS[@]}" \
+  "${CREW_ARGS[@]}" \
+  -Doba.inference.threads="${REPLAY_THREADS:-$REPLAY_THREADS_DEFAULT}" \
+  -Dparticle.filter.debug=false \
+  -DtimePredictions.status=ENABLED \
+  -Dorg.onebusaway.nyc.tdm.bundle.batchmode=true \
+  -Dbundle.location="$BUNDLE" \
+  -Djetty.http.port=8081 \
+  -Doba.deadband.enabled=true -Doba.deadband.minMeters=10 -Doba.deadband.minIntervalSec=7 -Doba.deadband.maxAgeSec=30 \
+  ${MVN_EXTRA[@]+"${MVN_EXTRA[@]}"} \
+  "$JETTY" 2>&1 | tee "$OUT_DIR/engine.log"
+rc=${PIPESTATUS[0]}
+
+[ -n "$UPLOAD_PID" ] && { kill "$UPLOAD_PID" 2>/dev/null; wait "$UPLOAD_PID" 2>/dev/null; }
+wait "$FEED_PID" 2>/dev/null
+if [ "$OUT_S3" != "none" ]; then
+  echo; echo "== upload (final sweep) =="
+  upload_parts | sed 's/^/  /'
+fi
+echo; echo "== feed =="; sed 's/^/  /' "$OUT_DIR/feed.log"
+echo; grep -a "replay: done" "$OUT_DIR/engine.log" | tail -1
+exit "$rc"

@@ -45,6 +45,14 @@
 			<AppenderRef ref="${log4j.appender}"/>
 		</Logger>
 
+		<!-- DummyVehiclePulloutService logs one line per record and can only ever return null, since it
+		     is a stub. -Doba.log.pullout=info restores it. -->
+		<Logger name="org.onebusaway.nyc.transit_data_federation.impl.vtw"
+				level="${sys:oba.log.pullout:-warn}"
+				additivity="false">
+			<AppenderRef ref="${log4j.appender}"/>
+		</Logger>
+
 		<Logger name="org.springframework.remoting.support.RemoteInvocationTraceInterceptor"
 				level="error"
 				additivity="false">

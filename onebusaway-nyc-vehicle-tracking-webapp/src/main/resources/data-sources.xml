@@ -111,42 +111,42 @@
 	<bean id="ieRmqAddr" class="org.springframework.beans.factory.config.MethodInvokingFactoryBean">
 		<property name="targetObject" ref="configurationService"/>
 		<property name="targetMethod" value="updateConfigurationMap"/>
-		<property name="arguments"><list><value>inference-engine.rabbitmq.addresses</value><value>${oba.rmq.addresses}</value></list></property>
+		<property name="arguments"><list><value>inference-engine.rabbitmq.addresses</value><value>${oba.rmq.addresses:}</value></list></property>
 	</bean>
 	<bean id="ieRmqUser" class="org.springframework.beans.factory.config.MethodInvokingFactoryBean">
 		<property name="targetObject" ref="configurationService"/>
 		<property name="targetMethod" value="updateConfigurationMap"/>
-		<property name="arguments"><list><value>inference-engine.rabbitmq.username</value><value>${oba.rmq.username}</value></list></property>
+		<property name="arguments"><list><value>inference-engine.rabbitmq.username</value><value>${oba.rmq.username:}</value></list></property>
 	</bean>
 	<bean id="ieRmqPass" class="org.springframework.beans.factory.config.MethodInvokingFactoryBean">
 		<property name="targetObject" ref="configurationService"/>
 		<property name="targetMethod" value="updateConfigurationMap"/>
-		<property name="arguments"><list><value>inference-engine.rabbitmq.password</value><value>${oba.rmq.password}</value></list></property>
+		<property name="arguments"><list><value>inference-engine.rabbitmq.password</value><value>${oba.rmq.password:}</value></list></property>
 	</bean>
 	<bean id="ieRmqStream" class="org.springframework.beans.factory.config.MethodInvokingFactoryBean">
 		<property name="targetObject" ref="configurationService"/>
 		<property name="targetMethod" value="updateConfigurationMap"/>
-		<property name="arguments"><list><value>inference-engine.rabbitmq.streamName</value><value>${oba.rmq.streamName}</value></list></property>
+		<property name="arguments"><list><value>inference-engine.rabbitmq.streamName</value><value>${oba.rmq.streamName:}</value></list></property>
 	</bean>
 	<bean id="ieRmqVhost" class="org.springframework.beans.factory.config.MethodInvokingFactoryBean">
 		<property name="targetObject" ref="configurationService"/>
 		<property name="targetMethod" value="updateConfigurationMap"/>
-		<property name="arguments"><list><value>inference-engine.rabbitmq.virtualHost</value><value>${oba.rmq.virtualHost}</value></list></property>
+		<property name="arguments"><list><value>inference-engine.rabbitmq.virtualHost</value><value>${oba.rmq.virtualHost:}</value></list></property>
 	</bean>
 	<bean id="ieRmqSsl" class="org.springframework.beans.factory.config.MethodInvokingFactoryBean">
 		<property name="targetObject" ref="configurationService"/>
 		<property name="targetMethod" value="updateConfigurationMap"/>
-		<property name="arguments"><list><value>inference-engine.rabbitmq.ssl</value><value>${oba.rmq.ssl}</value></list></property>
+		<property name="arguments"><list><value>inference-engine.rabbitmq.ssl</value><value>${oba.rmq.ssl:false}</value></list></property>
 	</bean>
 	<bean id="ieRmqOffset" class="org.springframework.beans.factory.config.MethodInvokingFactoryBean">
 		<property name="targetObject" ref="configurationService"/>
 		<property name="targetMethod" value="updateConfigurationMap"/>
-		<property name="arguments"><list><value>inference-engine.rabbitmq.offset</value><value>${oba.rmq.offset}</value></list></property>
+		<property name="arguments"><list><value>inference-engine.rabbitmq.offset</value><value>${oba.rmq.offset:}</value></list></property>
 	</bean>
 	<bean id="ieRmqPrefetch" class="org.springframework.beans.factory.config.MethodInvokingFactoryBean">
 		<property name="targetObject" ref="configurationService"/>
 		<property name="targetMethod" value="updateConfigurationMap"/>
-		<property name="arguments"><list><value>inference-engine.rabbitmq.prefetch</value><value>${oba.rmq.prefetch}</value></list></property>
+		<property name="arguments"><list><value>inference-engine.rabbitmq.prefetch</value><value>${oba.rmq.prefetch:}</value></list></property>
 	</bean>
 
 	<!--  for debugging purposes, the TDS can be populated via a JSON file -->
@@ -243,10 +243,27 @@
     </bean>
 
     <bean id="scheduledExecutorService" class="org.springframework.scheduling.concurrent.ScheduledExecutorFactoryBean" />
-    <bean id="taskScheduler" class="org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler" />
 
     <context:component-scan base-package="org.onebusaway.transit_data_federation.bundle.tasks.transit_graph"/>
 
     <import resource="${siri.service.config}"/>
-        
+
+    <!-- The clock every in-path "now" read goes through, so historical data can be replayed on
+         data-time. Both blocks define obaClock, so the bean always exists and @Autowired Clock
+         cannot fail to resolve. Nested <beans> must follow all top-level bean definitions. -->
+
+    <!-- every profile except replay: real time, identical to the previous direct new Date() calls -->
+    <beans profile="!replay">
+        <bean id="obaClock" class="java.time.Clock" factory-method="systemUTC" />
+        <bean id="taskScheduler" class="org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler" />
+    </beans>
+
+    <!-- replay: virtual time. The replay driver advances this to each record's own timestamp
+         immediately before dispatching that record. -->
+    <beans profile="replay">
+        <bean id="obaClock" class="org.onebusaway.nyc.vehicle_tracking.impl.clock.MutableClock" />
+        <!-- Drops background tasks whose @Replayable domain is not in -Doba.replay.tasks. -->
+        <bean id="taskScheduler" class="org.onebusaway.nyc.util.replay.GatedTaskScheduler" />
+    </beans>
+
 </beans>
