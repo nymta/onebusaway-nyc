@@ -1,0 +1,106 @@
+Logs the timestamps that decide whether a record reaches the particle filter. Not part of the build.
+
+Apply from the repository root with:
+
+    git apply local-loop/patches/gate-probe.patch
+
+then run with -Doba.gateprobe=true and grep the engine log for "GATE".
+
+WHY THIS EXISTS
+---------------
+Records are dropped between dispatch and inference by several checks, and none of them is counted. The
+driver reports a dropped record as dispatched, so "read=270 dispatched=270" is consistent with any
+number of records never reaching the filter. This makes the decision visible.
+
+Each line carries: the device timestamp, the timestamp stamped from the replay clock, which of the two
+getBestTimestamp chose, the filter's last-update time, and whether a previous observation exists.
+GATE-ACTION lines mark the paths that consume a record and produce nothing.
+
+WHAT IT FOUND
+-------------
+Comparing two four-thread runs of the same 270-record fixture: the clock stamp and the chosen timestamp
+were byte-identical on every record, and record order within each bus was identical - which eliminated
+the shared clock and record reordering as causes. No GATE-ACTION fired, so none of the instrumented drop
+paths was responsible either.
+
+What differed was the filter's own state: on 3 of 270 records the last-update time read as 0 when it
+should have carried the previous record's timestamp. For three of five buses, particle creation
+therefore ran on a different record in each run. Candidate counts at that record were identical
+(40/40, 9/9, 51/51), so candidate generation was not the cause.
+
+That is where the investigation stopped. The divergence is inside VehicleInferenceInstance's
+initialisation path, and no reset or eviction call explains it - ParticleFilter.reset() was never
+called, and all five callers of resetVehicleLocation were eliminated.
+
+--- a/onebusaway-nyc-vehicle-tracking/src/main/java/org/onebusaway/nyc/vehicle_tracking/impl/inference/VehicleInferenceInstance.java
++++ b/onebusaway-nyc-vehicle-tracking/src/main/java/org/onebusaway/nyc/vehicle_tracking/impl/inference/VehicleInferenceInstance.java
+@@ -93,6 +93,14 @@
+ 
+   private BlockCalendarService _blockCalendarService;
+ 
++  /**
++   * Set -Doba.gateprobe=true to log, for every record, the timestamps that decide whether it reaches
++   * the particle filter at all. Records dropped by the checks below are counted nowhere - the driver
++   * still reports them as dispatched - so a record that silently never reaches inference is otherwise
++   * invisible. Written through the logger rather than a file so it needs no synchronisation.
++   */
++  private static final boolean GATE_PROBE = Boolean.getBoolean("oba.gateprobe");
++
+   private long _automaticResetWindow = 20 * 60 * 1000;
+ 
+   private Observation _previousObservation = null;
+@@ -179,6 +187,17 @@
+         record.getTimeReceived());
+     _lastUpdateTime = timestamp;
+ 
++    if (GATE_PROBE) {
++      // dev vs recv shows which one getBestTimestamp picked; chosen vs lastUpdated decides the
++      // branch below. If recv differs between two runs for the same record, the shared clock is
++      // being read at a different moment. If recv matches and only the branch differs, the filter
++      // state is racing instead.
++      _log.warn(String.format(
++          "GATE veh=%s dev=%d recv=%d chosen=%d lastUpdated=%.0f prevObs=%s",
++          record.getVehicleId(), record.getTime(), record.getTimeReceived(), timestamp,
++          _particleFilter.getTimeOfLastUpdated(), _previousObservation == null ? "null" : "set"));
++    }
++
+     /**
+      * If this record occurs BEFORE, or at the same time as, the most recent
+      * update, we take special action
+@@ -191,10 +210,16 @@
+        * simply ignore the out-of-order record
+        */
+       if (backInTime > 5 * 60 * 1000) {
++        if (GATE_PROBE)
++          _log.warn("GATE-ACTION veh=" + record.getVehicleId() + " chosen=" + timestamp
++              + " action=reset-large-backstep backInTime=" + backInTime);
+         _log.info("resetting filter: time diff");
+         _previousObservation = null;
+         _particleFilter.reset();
+       } else {
++        if (GATE_PROBE)
++          _log.warn("GATE-ACTION veh=" + record.getVehicleId() + " chosen=" + timestamp
++              + " action=SKIP-out-of-order backInTime=" + backInTime);
+         _log.info("out-of-order record.  skipping update.");
+         return false;
+       }
+@@ -221,6 +246,9 @@
+           record.getOperatorId());
+ 
+       if (delta > _automaticResetWindow) {
++        if (GATE_PROBE)
++          _log.warn("GATE-ACTION veh=" + record.getVehicleId() + " chosen=" + timestamp
++              + " action=reset-idle-window delta=" + delta);
+         _log.info("resetting inference for vid=" + record.getVehicleId()
+             + " since it's been " + (delta / 1000)
+             + " seconds since the previous update");
+@@ -240,6 +268,9 @@
+        * to replace the missing values
+        */
+       if (_previousObservation == null) {
++        if (GATE_PROBE)
++          _log.warn("GATE-ACTION veh=" + record.getVehicleId() + " chosen=" + timestamp
++              + " action=SKIP-latlon-missing-no-previous");
+         _log.debug("missing previous observation and current lat/lon:"
+             + record.getVehicleId() + ", skipping update.");
+         return false;

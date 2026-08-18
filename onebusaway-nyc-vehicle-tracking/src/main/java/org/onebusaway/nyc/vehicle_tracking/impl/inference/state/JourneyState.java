@@ -90,7 +90,9 @@ public final class JourneyState {
     final int prime = 31;
     int result = 1;
     result = prime * result + ((data == null) ? 0 : data.hashCode());
-    result = prime * result + ((phase == null) ? 0 : phase.hashCode());
+    // name().hashCode(), not phase.hashCode(): Enum.hashCode() is final and identity-based, so it
+    // differs between JVM runs and leaks into every hash-ordered container holding a Particle.
+    result = prime * result + ((phase == null) ? 0 : phase.name().hashCode());
     return result;
   }
 

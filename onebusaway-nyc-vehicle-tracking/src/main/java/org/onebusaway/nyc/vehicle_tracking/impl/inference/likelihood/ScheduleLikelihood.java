@@ -45,12 +45,13 @@ public class ScheduleLikelihood implements SensorModelRule {
       1, 5d, 1d / (2d * 290d));
   
   final static private double pFormal = 0.95d;
+  final static private double LOG_P_FORMAL = FastMath.log(pFormal);
+  final static private double LOG1P_NEG_P_FORMAL = FastMath.log1p(-pFormal);
   
   /*
    * In minutes, as well
    */
   private static final double DEFAULT_POS_SCHED_DEV_CUTOFF = 75d;
-  private static double POS_SCHED_DEV_CUTOFF = DEFAULT_POS_SCHED_DEV_CUTOFF;
   private static final double NEG_SCHED_DEV_CUTOFF = -30d;
   
   @Autowired
@@ -82,21 +83,22 @@ public class ScheduleLikelihood implements SensorModelRule {
     } else {
     	
     	// adjust positive schedule deviation cut off according to the trip duration
+        final double posSchedDevCutoff;
         if(!blockState.getRunTripEntry().getTripEntry().equals(null)){
-        	
+
         	final List<StopTimeEntry> stopTimes = blockState.getRunTripEntry().getTripEntry().getStopTimes();
-        	
+
         	final double trip_sched_dev_cuttoff = ((stopTimes.get(stopTimes.size()-1).getDepartureTime() - stopTimes.get(0).getArrivalTime()) * 2)/60;
-        	
+
     		if(trip_sched_dev_cuttoff < DEFAULT_POS_SCHED_DEV_CUTOFF){
-    			POS_SCHED_DEV_CUTOFF = trip_sched_dev_cuttoff;
+    			posSchedDevCutoff = trip_sched_dev_cuttoff;
     		}
     		else{
-    			POS_SCHED_DEV_CUTOFF = DEFAULT_POS_SCHED_DEV_CUTOFF;
+    			posSchedDevCutoff = DEFAULT_POS_SCHED_DEV_CUTOFF;
     		}
 
     	} else{
-    		POS_SCHED_DEV_CUTOFF = DEFAULT_POS_SCHED_DEV_CUTOFF;
+    		posSchedDevCutoff = DEFAULT_POS_SCHED_DEV_CUTOFF;
     	}
       final StudentTDistribution schedDist = getSchedDistForBlockState(state.getBlockStateObservation());
       final double x = state.getBlockStateObservation().getScheduleDeviation();
@@ -104,7 +106,7 @@ public class ScheduleLikelihood implements SensorModelRule {
       if (EVehiclePhase.DEADHEAD_AFTER == phase) {
 
         if (FastMath.abs(x) > 0d) {
-          final double pSched = getScheduleDevLogProb(x, schedDist);
+          final double pSched = getScheduleDevLogProb(x, schedDist, posSchedDevCutoff);
           result.addLogResultAsAnd("deadhead after", pSched);
         } else {
           result.addLogResultAsAnd("deadhead after", 0.0);
@@ -113,7 +115,7 @@ public class ScheduleLikelihood implements SensorModelRule {
       } else if (EVehiclePhase.DEADHEAD_BEFORE == phase) {
 
         if (FastMath.abs(x) > 0d) {
-          final double pSched = getScheduleDevLogProb(x, schedDist);
+          final double pSched = getScheduleDevLogProb(x, schedDist, posSchedDevCutoff);
           result.addLogResultAsAnd("deadhead before", pSched);
         } else {
           result.addLogResultAsAnd("deadhead before", 0.0);
@@ -122,7 +124,7 @@ public class ScheduleLikelihood implements SensorModelRule {
       } else if (EVehiclePhase.LAYOVER_BEFORE == phase) {
 
         if (FastMath.abs(x) > 0d) {
-          final double pSched = getScheduleDevLogProb(x, schedDist);
+          final double pSched = getScheduleDevLogProb(x, schedDist, posSchedDevCutoff);
           result.addLogResultAsAnd("layover before", pSched);
         } else {
           result.addLogResultAsAnd("layover before", 0.0);
@@ -130,16 +132,16 @@ public class ScheduleLikelihood implements SensorModelRule {
 
       } else if (EVehiclePhase.DEADHEAD_DURING == phase) {
         
-        final double pSched = getScheduleDevLogProb(x, schedDist);
+        final double pSched = getScheduleDevLogProb(x, schedDist, posSchedDevCutoff);
         result.addLogResultAsAnd("deadhead during", pSched);
 
       } else if (EVehiclePhase.LAYOVER_DURING == phase) {
 
-        final double pSched = getScheduleDevLogProb(x, schedDist);
+        final double pSched = getScheduleDevLogProb(x, schedDist, posSchedDevCutoff);
         result.addLogResultAsAnd("layover during", pSched);
 
       } else if (EVehiclePhase.IN_PROGRESS == phase) {
-        final double pSched = getScheduleDevLogProb(x, schedDist);
+        final double pSched = getScheduleDevLogProb(x, schedDist, posSchedDevCutoff);
         result.addLogResultAsAnd("in progress", pSched);
       }
     }
@@ -151,12 +153,13 @@ public class ScheduleLikelihood implements SensorModelRule {
    * Manual truncation (when using the formal run distribution)
    * We shouldn't have to worry about normalization, yet.
    */
-  public static double getScheduleDevLogProb(final double x, StudentTDistribution schedDist) {
-    final double pSched; 
+  public static double getScheduleDevLogProb(final double x, StudentTDistribution schedDist,
+      final double posSchedDevCutoff) {
+    final double pSched;
     final boolean isFormal = schedDist == schedDevFormalRunDist;
-    if ( !isFormal || 
-        (x <= POS_SCHED_DEV_CUTOFF && x >= NEG_SCHED_DEV_CUTOFF)) {
-      pSched = (isFormal ? FastMath.log(pFormal) : FastMath.log1p(-pFormal)) + schedDist.getProbabilityFunction().logEvaluate(x);
+    if ( !isFormal ||
+        (x <= posSchedDevCutoff && x >= NEG_SCHED_DEV_CUTOFF)) {
+      pSched = (isFormal ? LOG_P_FORMAL : LOG1P_NEG_P_FORMAL) + schedDist.getProbabilityFunction().logEvaluate(x);
     } else {
       pSched = Double.NEGATIVE_INFINITY;
     }    
@@ -174,7 +177,7 @@ public class ScheduleLikelihood implements SensorModelRule {
 
   public static double truncateTime(double d, boolean isFormal) {
     if (!isFormal) {
-      if (d > POS_SCHED_DEV_CUTOFF) {
+      if (d > DEFAULT_POS_SCHED_DEV_CUTOFF) {
         return Double.POSITIVE_INFINITY;
       } else if (d < NEG_SCHED_DEV_CUTOFF){
         return -Double.NEGATIVE_INFINITY;

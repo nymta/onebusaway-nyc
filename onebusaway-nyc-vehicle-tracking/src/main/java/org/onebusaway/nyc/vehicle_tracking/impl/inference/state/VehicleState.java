@@ -127,7 +127,8 @@ public final class VehicleState implements Comparable<VehicleState> {
             : blockStateObservation.hashCode());
     // XXX we're only concerned with phase here
     result = prime * result
-        + ((journeyState == null) ? 0 : journeyState.getPhase().hashCode());
+        + ((journeyState == null) ? 0
+            : journeyState.getPhase().name().hashCode());
     // result = prime * result
     // + ((journeySummaries == null) ? 0 : journeySummaries.hashCode());
     result = prime * result

@@ -102,6 +102,8 @@ public class CategoricalDist<T extends Comparable<T>> {
   }
 
   synchronized public static void setSeed(long seed) {
+    InferenceRng.setGlobalSeed(seed);
+    // kept in step for any non-inference caller still holding the old accessor
     if (!ParticleFilter.getReproducibilityEnabled()) {
       threadLocalRng = new LocalRandom(seed);
     } else {
@@ -159,7 +161,7 @@ public class CategoricalDist<T extends Comparable<T>> {
     }
 
     _emd.setNumTrials(1);
-    final Vector sampleRes = _emd.sample(threadLocalRng.get());
+    final Vector sampleRes = _emd.sample(InferenceRng.categorical());
     final int newIdx = Iterables.indexOf(sampleRes,
         new Predicate<VectorEntry>() {
           @Override
@@ -241,7 +243,7 @@ public class CategoricalDist<T extends Comparable<T>> {
       }
 
       _emd.setNumTrials(samples);
-      final Vector sampleRes = _emd.sample(threadLocalRng.get());
+      final Vector sampleRes = _emd.sample(InferenceRng.categorical());
 
       int i = 0;
       for (final VectorEntry ventry : sampleRes) {

@@ -1,0 +1,34 @@
+{
+  "fixture": "determinism-270.jsonl",
+  "purpose": "determinism only",
+  "sha256": "d9979a0cefefe64383156f4602e03aa9cce26e0345a917d4c7e36b214c900aa8",
+  "bytes": 208046,
+  "records": 270,
+  "vehicles": 5,
+  "agencies": ["MTA NYCT", "MTABC"],
+  "timeReceived": {
+    "first": "2026-07-28T12:45:00Z",
+    "last": "2026-07-28T12:49:58Z",
+    "monotonic": true
+  },
+  "bundle": "2026C6_wholeMTA_v2",
+
+  "scrubbed": {
+    "field": "RealtimeEnvelope.CcLocationReport.operatorID.designator",
+    "reason": "MTA employee badge number; must not enter git history",
+    "by": "local-loop/replay/scrub-fixture.py",
+    "method": "textual substitution, CRC32-derived surrogate, distinctness preserved",
+    "note": "Operator assignment needs UTS run data, which a local bundle does not have, so this is expected not to change inference output. Confirm with one determinism run if you rely on it."
+  },
+
+  "provenance": {
+    "source": "archived bustechGps bucket, 5-minute window 2026-07-28 12:45Z (08:45 EDT)",
+    "generator": "local-loop/replay/make-replay-fixture.py <bucket.jsonl.gz> -n 5",
+    "selection": "make-replay-fixture.py ranks vehicles by: destSignCode present in the bundle's csv/dsc_statistics.csv, one DSC for the whole window, distance actually travelled, and at least 30 records. Records are written in ascending (timeReceived, UUID) order.",
+    "note": "Regenerating gives the unscrubbed fixture. Vehicle ranking depends on the bundle's dsc_statistics.csv, so a different bundle can select different vehicles. Run scrub-fixture.py before committing anything derived from it."
+  },
+
+  "unsuitable_for": [
+    "trip-match-rate comparison against production - operator designators are surrogates, and 270 records over 5 vehicles is not a representative sample of a 266,112-record bucket"
+  ]
+}

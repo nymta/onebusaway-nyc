@@ -1,0 +1,322 @@
+Instrumentation used to find the cause of non-deterministic replay. Not part of the build.
+
+Apply from the repository root with:
+
+    git apply local-loop/patches/hash-probe.patch
+
+and run the engine with -Doba.hashprobe=/tmp/probe.txt. It writes two files per vehicle:
+<path>.<vehicleId> and <path>.entries.<vehicleId>.
+
+WHAT IT MEASURED, AND WHY EACH PART EXISTS
+------------------------------------------
+Provenance. Each dump names the jar every patched class was loaded from, via
+getProtectionDomain().getCodeSource(). A class shadowed on the classpath that loses to another jar
+produces no error and no warning, so without this line a negative result cannot be distinguished from
+"the patch was never loaded". One earlier conclusion was wrong for exactly this reason.
+
+Hash values vs iteration order are DIFFERENT questions. The dump has two sections. The sorted section
+answers "is the hash of a given content key the same in two JVMs". The unsorted ITERATION ORDER
+section answers "does the container yield its elements in the same sequence". A probe that sorts its
+output cannot answer the second, and conflating them cost a run.
+
+Once per vehicle, not once per JVM. Each vehicle's first record is a separate question. A JVM-wide
+one-shot probe measures whichever vehicle happens to arrive first and says nothing about the others.
+
+n / orderChecksum / sampled, in the .entries dump, separate three failures that look alike:
+  n differs                      -> the distribution has a different number of entries
+  orderChecksum differs, n same  -> same entries, different sequence, OR the entry hashes moved
+                                    (the checksum folds in hashCode, so it cannot separate these two;
+                                    to distinguish them, dump value-based content keys per position)
+  both same, sampled differs     -> same vector and same draw, so look at handleSort/_objIdx
+
+Candidate sets legitimately contain null. See ParticleFactoryImpl's own null guard, and
+MotionModelImpl's transitions.add(newParentBlockStateObs). An unguarded probe throws out of
+createParticles, which both loses the measurement and perturbs the run.
+
+A probe must never change what it measures. The body is wrapped so a RuntimeException is logged
+rather than propagated.
+
+WHAT IT FOUND
+-------------
+Three identity-hash holes reaching Particle, and therefore reaching the iteration order of every
+hash-ordered container on the inference path:
+  BlockConfigurationEntryImpl  - declares no hashCode      (upstream, shadowed)
+  TripEntryImpl                - declares no hashCode      (upstream, shadowed)
+  java.lang.Enum.hashCode()    - final, identity-based, folded in at VehicleState and JourneyState
+
+The enum was the last one and the least visible: Enum declares a hashCode, so a scan for "classes
+lacking hashCode" does not find it. It cannot be overridden, so the fix is at the call sites that fold
+it in, which means the audit surface is "places that fold a hash", not "classes lacking one".
+
+--- a/onebusaway-nyc-vehicle-tracking/src/main/java/org/onebusaway/nyc/vehicle_tracking/impl/inference/ParticleFactoryImpl.java
++++ b/onebusaway-nyc-vehicle-tracking/src/main/java/org/onebusaway/nyc/vehicle_tracking/impl/inference/ParticleFactoryImpl.java
+@@ -170,7 +170,16 @@
+ 
+     final Set<BlockStateObservation> potentialBlocks = _blocksFromObservationService.determinePotentialBlockStatesForObservation(obs);
+ 
++    HashProbe.dumpOnce(String.valueOf(obs.getRecord().getVehicleId()), obs.getTime(),
++        potentialBlocks);
++
++
+     final Multiset<Particle> particles = HashMultiset.create();
++
++    final String probeVeh = String.valueOf(obs.getRecord().getVehicleId());
++    final boolean probing = HashProbe.enabled() && HashProbe.isFirstRecord(probeVeh);
++    final java.util.List<String> probeOrder = probing
++        ? new java.util.ArrayList<String>() : null;
+ 
+     double normOffset = Double.NEGATIVE_INFINITY;
+     for (int i = 0; i < _initialNumberOfParticles; ++i) {
+@@ -229,6 +238,10 @@
+       final Particle newSample;
+       if (transitionProb.canSample()) {
+         newSample = transitionProb.sample();
++        if (probing)
++          probeOrder.add(String.format("%03d n=%d orderChecksum=%d sampled=%d", i,
++              transitionProb.size(), HashProbe.orderChecksum(transitionProb.probeEntries()),
++              newSample.hashCode()));
+         newSample.setLogWeight(newSample.getResult().getLogProbability());
+         particles.add(newSample);
+       } else {
+@@ -272,6 +285,9 @@
+               - normOffset);
+     }
+ 
++    if (probing)
++      HashProbe.dumpEntryOrder(probeVeh, (long) timestamp, probeOrder);
++
+     return particles;
+   }
+ 
+--- a/onebusaway-nyc-vehicle-tracking/src/main/java/org/onebusaway/nyc/vehicle_tracking/impl/inference/CategoricalDist.java
++++ b/onebusaway-nyc-vehicle-tracking/src/main/java/org/onebusaway/nyc/vehicle_tracking/impl/inference/CategoricalDist.java
+@@ -176,6 +176,11 @@
+     return (T) _entries[_objIdx.get(newIdx)];
+   }
+ 
++  /** Measurement only: the vector sample() indexes, in the order it will be indexed. */
++  Object[] probeEntries() {
++    return _entries;
++  }
++
+   private void initializeDistribution() {
+     final double[] entriesToProbs = _entriesToLogProbs.values();
+     double[] probVector = new double[entriesToProbs.length];
+--- /dev/null
++++ b/onebusaway-nyc-vehicle-tracking/src/main/java/org/onebusaway/nyc/vehicle_tracking/impl/inference/HashProbe.java
+@@ -0,0 +1,215 @@
++/**
++ * Copyright (C) 2011 Metropolitan Transportation Authority
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *         http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.onebusaway.nyc.vehicle_tracking.impl.inference;
++
++import java.io.BufferedWriter;
++import java.io.FileWriter;
++import java.io.IOException;
++import java.util.ArrayList;
++import java.util.Collections;
++import java.util.List;
++
++import org.onebusaway.nyc.vehicle_tracking.impl.inference.state.BlockStateObservation;
++import org.onebusaway.transit_data_federation.impl.transit_graph.BlockConfigurationEntryImpl;
++import org.onebusaway.transit_data_federation.services.blocks.BlockInstance;
++import org.slf4j.Logger;
++import org.slf4j.LoggerFactory;
++
++/**
++ * Answers one question: are the hash codes that drive container order the same in two JVMs?
++ *
++ * <p>This measures the mechanism, not its consequences. It pairs a content key with the hash code
++ * derived from it, so two runs can be diffed directly. If the hash for a given key differs between
++ * runs, identity hashing is still reaching the containers, whatever the replay output happens to do.
++ *
++ * <p>It also reports which file each patched class was loaded from. A shadow that loses to the jar on
++ * the classpath produces no error and no warning, so the provenance line is the only way to know the
++ * patched code is the code running.
++ *
++ * <p>Fires once per JVM, on the first candidate set seen. Off unless {@code -Doba.hashprobe=<path>}
++ * is set.
++ */
++public final class HashProbe {
++
++  private static final Logger _log = LoggerFactory.getLogger(HashProbe.class);
++
++  /** One dump per vehicle, not per JVM: each vehicle's first record is a separate question. */
++  private static final java.util.concurrent.ConcurrentMap<String, Boolean> DONE =
++      new java.util.concurrent.ConcurrentHashMap<String, Boolean>();
++
++  private HashProbe() {
++  }
++
++  public static boolean enabled() {
++    final String p = System.getProperty("oba.hashprobe");
++    return p != null && !p.isEmpty();
++  }
++
++  private static String codeSource(Class<?> c) {
++    try {
++      final Object cs = c.getProtectionDomain().getCodeSource();
++      return cs == null ? "<bootstrap/unknown>" : String.valueOf(((java.security.CodeSource) cs).getLocation());
++    } catch (Exception e) {
++      return "<unavailable: " + e + ">";
++    }
++  }
++
++  /**
++   * @param candidates the candidate set handed to particle creation for one record
++   */
++  /**
++   * Position-weighted checksum of the sampling vector. Changes if the sequence changes, even when the
++   * set of entries is identical - which is the case this is built to detect.
++   */
++  public static int orderChecksum(Object[] entries) {
++    if (entries == null)
++      return 0;
++    int h = 17;
++    for (int i = 0; i < entries.length; i++) {
++      h = 31 * h + (entries[i] == null ? 0 : entries[i].hashCode());
++      h = 31 * h + i;
++    }
++    return h;
++  }
++
++  /** Writes one line per particle iteration, so a divergence can be located within the 200. */
++  public static void dumpEntryOrder(String vehicleId, long timestamp, List<String> perIteration) {
++    if (!enabled())
++      return;
++    final String path = System.getProperty("oba.hashprobe") + ".entries." + vehicleId.replace(' ', '_');
++    try {
++      final BufferedWriter out = new BufferedWriter(new FileWriter(path));
++      try {
++        out.write("# vehicle=" + vehicleId + " t=" + timestamp + " iterations=" + perIteration.size());
++        out.newLine();
++        for (final String l : perIteration) {
++          out.write(l);
++          out.newLine();
++        }
++        out.flush();
++      } finally {
++        out.close();
++      }
++      _log.warn("entry-order probe written to " + path);
++    } catch (Exception e) {
++      _log.error("entry-order probe failed for " + vehicleId, e);
++    }
++  }
++
++  public static boolean isFirstRecord(String vehicleId) {
++    return Boolean.TRUE.equals(DONE.get(vehicleId)) && FIRST.contains(vehicleId);
++  }
++
++  private static final java.util.Set<String> FIRST =
++      java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<String, Boolean>());
++
++  public static void dumpOnce(String vehicleId, long timestamp,
++      Iterable<BlockStateObservation> candidates) {
++    if (!enabled() || DONE.putIfAbsent(vehicleId, Boolean.TRUE) != null)
++      return;
++    FIRST.add(vehicleId);
++
++    // One file per vehicle, so thread interleaving cannot reorder the comparison.
++    final String path = System.getProperty("oba.hashprobe") + "." + vehicleId.replace(' ', '_');
++    try {
++    final List<String> lines = new ArrayList<String>();
++
++    for (final BlockStateObservation bso : candidates) {
++      if (bso == null || bso.getBlockState() == null)
++        continue;
++      final BlockInstance bi = bso.getBlockState().getBlockInstance();
++      if (bi == null || bi.getBlock() == null)
++        continue;
++
++      // Content key: what the hash is supposed to be a function of. Deliberately built from ids and
++      // scalars only, so the key itself cannot vary between runs.
++      final String key = bi.getBlock().getBlock().getId() + "|" + bi.getServiceDate() + "|"
++          + bi.getBlock().getServiceIds();
++
++      lines.add(key
++          + "  blockConfigHash=" + bi.getBlock().hashCode()
++          + "  blockInstanceHash=" + bi.hashCode()
++          + "  blockStateHash=" + bso.getBlockState().hashCode()
++          + "  bsoHash=" + bso.hashCode());
++    }
++
++    // The sequence as the set actually yielded it, before sorting. The sorted block below answers
++    // "are the hash values stable"; this block answers "is the iteration order stable", which is a
++    // different question and the one that decides whether a hash fix can replace an ordered container.
++    final List<String> order = new ArrayList<String>();
++    int pos = 0;
++    for (final BlockStateObservation bso : candidates) {
++      final String id;
++      if (bso == null) {
++        id = "<null candidate>";
++      } else if (bso.getBlockState() == null || bso.getBlockState().getBlockLocation() == null) {
++        id = "<no block state>";
++      } else {
++        id = String.valueOf(bso.getBlockState().getBlockInstance().getBlock().getBlock().getId())
++            + "@" + bso.getBlockState().getBlockLocation().getScheduledTime();
++      }
++      order.add(String.format("%03d %s  bsoHash=%s", pos++, id,
++          bso == null ? "n/a" : String.valueOf(bso.hashCode())));
++    }
++
++    // Sorted, so this block is unaffected by the very iteration order under test.
++    Collections.sort(lines);
++
++    BufferedWriter out = null;
++    try {
++      out = new BufferedWriter(new FileWriter(path));
++      out.write("# provenance - the patched classes must load from target/classes, not from a jar");
++      out.newLine();
++      out.write("# BlockConfigurationEntryImpl <- " + codeSource(BlockConfigurationEntryImpl.class));
++      out.newLine();
++      out.write("# TripEntryImpl               <- "
++          + codeSource(org.onebusaway.transit_data_federation.impl.transit_graph.TripEntryImpl.class));
++      out.newLine();
++      out.write("# vehicle=" + vehicleId + " t=" + timestamp);
++      out.newLine();
++      out.write("# candidates=" + lines.size());
++      out.newLine();
++      out.write("# --- ITERATION ORDER (as the set yielded it) ---");
++      out.newLine();
++      for (final String l : order) {
++        out.write(l);
++        out.newLine();
++      }
++      out.write("# --- HASH VALUES BY CONTENT KEY (sorted) ---");
++      out.newLine();
++      for (final String l : lines) {
++        out.write(l);
++        out.newLine();
++      }
++      out.flush();
++      _log.warn("hash probe written to " + path + " (" + lines.size() + " candidates)");
++    } catch (IOException e) {
++      _log.error("could not write hash probe " + path, e);
++    } finally {
++      if (out != null) {
++        try {
++          out.close();
++        } catch (IOException e) {
++          _log.warn("could not close hash probe", e);
++        }
++      }
++    }
++    } catch (RuntimeException e) {
++      // Never let measurement change the thing being measured.
++      _log.error("hash probe failed for " + vehicleId + "; continuing", e);
++    }
++  }
++}
