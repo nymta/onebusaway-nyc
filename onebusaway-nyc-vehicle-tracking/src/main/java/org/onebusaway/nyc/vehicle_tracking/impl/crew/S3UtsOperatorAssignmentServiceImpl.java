@@ -41,6 +41,9 @@ public class S3UtsOperatorAssignmentServiceImpl implements OperatorAssignmentSer
   private volatile Map<ServiceDate, HashMap<String, OperatorAssignmentItem>> _serviceDateToOperatorListMap =
       new HashMap<ServiceDate, HashMap<String, OperatorAssignmentItem>>();
 
+  /** Guards refreshes; never lock the map field itself — refreshes replace it. */
+  private final Object _refreshLock = new Object();
+
   private volatile Date _lastS3Modified = null;
   private File _localCisFile;
   private Set<ServiceDate> _testServiceDates;
@@ -96,33 +99,33 @@ public class S3UtsOperatorAssignmentServiceImpl implements OperatorAssignmentSer
   }
 
   public void refreshData() {
-    try {
-      File cisFile = resolveCisFile();
-      if (cisFile == null || !cisFile.exists()) {
-        _log.error("UTS CIS file unavailable; operator assignments not refreshed");
-        return;
-      }
+    synchronized (_refreshLock) {
+      try {
+        File cisFile = resolveCisFile();
+        if (cisFile == null || !cisFile.exists()) {
+          _log.error("UTS CIS file unavailable; operator assignments not refreshed");
+          return;
+        }
 
-      Map<ServiceDate, HashMap<String, OperatorAssignmentItem>> updated =
-          new HashMap<ServiceDate, HashMap<String, OperatorAssignmentItem>>();
+        Map<ServiceDate, HashMap<String, OperatorAssignmentItem>> updated =
+            new HashMap<ServiceDate, HashMap<String, OperatorAssignmentItem>>();
 
-      for (ServiceDate serviceDate : applicableServiceDates()) {
-        DateMidnight midnight = new DateMidnight(serviceDate.getYear(), serviceDate.getMonth(),
-            serviceDate.getDay());
-        HashMap<String, OperatorAssignment> parsed =
-            UtsCrewAssignmentParser.loadForServiceDate(cisFile, midnight);
-        HashMap<String, OperatorAssignmentItem> map = toItems(parsed);
-        if (map != null && !map.isEmpty()) {
+        for (ServiceDate serviceDate : applicableServiceDates()) {
+          DateMidnight midnight = new DateMidnight(serviceDate.getYear(), serviceDate.getMonth(),
+              serviceDate.getDay());
+          HashMap<String, OperatorAssignment> parsed =
+              UtsCrewAssignmentParser.loadForServiceDate(cisFile, midnight);
+          HashMap<String, OperatorAssignmentItem> map = toItems(parsed);
+          // Cache empty dates too, so a date with no CIS rows yet (e.g., tomorrow) is a
+          // fast cache hit instead of a per-lookup refresh.
           updated.put(serviceDate, map);
           _log.info("Loaded {} UTS operator assignments for serviceDate={}", map.size(), serviceDate);
         }
-      }
 
-      synchronized (_serviceDateToOperatorListMap) {
         _serviceDateToOperatorListMap = updated;
+      } catch (Exception e) {
+        _log.error("UTS crew refresh failed: {}", e.getMessage(), e);
       }
-    } catch (Exception e) {
-      _log.error("UTS crew refresh failed: {}", e.getMessage(), e);
     }
   }
 
@@ -221,13 +224,23 @@ public class S3UtsOperatorAssignmentServiceImpl implements OperatorAssignmentSer
     if (list != null) {
       return list;
     }
-    synchronized (_serviceDateToOperatorListMap) {
+    synchronized (_refreshLock) {
       list = _serviceDateToOperatorListMap.get(serviceDate);
       if (list != null) {
         return list;
       }
       refreshData();
-      return _serviceDateToOperatorListMap.get(serviceDate);
+      list = _serviceDateToOperatorListMap.get(serviceDate);
+      if (list == null) {
+        // Negative-cache unknown dates so each costs at most one refresh, never one per
+        // record. Copy instead of mutating: readers access the map unlocked.
+        list = new HashMap<String, OperatorAssignmentItem>();
+        Map<ServiceDate, HashMap<String, OperatorAssignmentItem>> copy =
+            new HashMap<ServiceDate, HashMap<String, OperatorAssignmentItem>>(_serviceDateToOperatorListMap);
+        copy.put(serviceDate, list);
+        _serviceDateToOperatorListMap = copy;
+      }
+      return list;
     }
   }
 }
