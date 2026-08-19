@@ -50,11 +50,19 @@ import com.fasterxml.jackson.databind.ObjectMapper;
  * ({@code aws s3 mv}), not here: the AWS SDK on this classpath is 1.3.9 (2012), which signs with
  * SigV2 and gets AccessDenied from any modern bucket.
  *
+ * <p>Parts roll on virtual time, not record count: each part covers one {@code rollMinutes} window
+ * of each record's own {@code recordTimestamp}, and the filename names that window
+ * ({@code inferred-<windowStartUtc>.ndjson[.gz]}), so which part to resume from after a crash is
+ * legible from the directory listing alone. Records are not strictly time-ordered across the 46
+ * stripes, so a rare straggler from an already-closed window lands in the currently open part
+ * instead of reopening a finished one; the part name is which window it was collected *for*, not a
+ * strict guarantee every record in it falls inside that window.
+ *
  * <p>Select with {@code -Die.output.queue=S3OutputQueueSenderServiceImpl}. Properties:
  *
  * <ul>
  * <li>{@code oba.replay.output.dir} - spool directory (default /tmp/oba-replay-out)
- * <li>{@code oba.replay.output.rollLines} - records per part (default 250000)
+ * <li>{@code oba.replay.output.rollMinutes} - virtual minutes per part (default 15)
  * <li>{@code oba.replay.output.gzip} - default true; set false for plain NDJSON that
  *     compare-replay-runs.py can read directly
  * </ul>
@@ -74,15 +82,19 @@ public class S3OutputQueueSenderServiceImpl implements OutputQueueSenderService 
   private boolean _isPrimaryInferenceInstance = true;
   private String _primaryHostname = null;
 
+  private static final java.time.format.DateTimeFormatter PART_NAME_FORMAT =
+      java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'")
+          .withZone(java.time.ZoneOffset.UTC);
+
   private File _dir;
-  private int _rollLines;
+  private long _rollMillis;
   private boolean _gzip;
 
   private final Object _lock = new Object();
   private Writer _writer;
   private File _currentPart;      // the .open file being written
   private File _finalPart;        // its name once complete
-  private int _partIndex = 0;
+  private long _currentBucketStart = Long.MIN_VALUE; // start of the window the open part covers
   private long _linesInPart = 0;
   private long _totalLines = 0;
   private boolean _closed = false;
@@ -91,14 +103,14 @@ public class S3OutputQueueSenderServiceImpl implements OutputQueueSenderService 
   @PostConstruct
   public void setup() throws IOException {
     _dir = new File(System.getProperty("oba.replay.output.dir", "/tmp/oba-replay-out"));
-    _rollLines = Integer.getInteger("oba.replay.output.rollLines", 250000);
+    _rollMillis = Integer.getInteger("oba.replay.output.rollMinutes", 15) * 60_000L;
     _gzip = !"false".equalsIgnoreCase(System.getProperty("oba.replay.output.gzip", "true"));
 
     if (!_dir.isDirectory() && !_dir.mkdirs())
       throw new IOException("cannot create output spool dir " + _dir);
 
-    openNextPart();
-    _log.warn("inference output -> {} (roll every {} records)", _dir, _rollLines);
+    // The first part opens lazily on the first record, once its recordTimestamp fixes the window.
+    _log.warn("inference output -> {} (roll every {} virtual minutes)", _dir, _rollMillis / 60_000L);
 
     Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
       @Override
@@ -119,25 +131,39 @@ public class S3OutputQueueSenderServiceImpl implements OutputQueueSenderService 
       _mapper.writeValue(jsonGenerator, r);
       sw.close();
 
+      final Long ts = r.getRecordTimestamp();
+
       synchronized (_lock) {
         if (_closed)
           return;
+        if (_currentBucketStart == Long.MIN_VALUE) {
+          openNextPart(bucketStartFor(ts));
+        } else if (ts != null && bucketStartFor(ts) > _currentBucketStart) {
+          rollPart(bucketStartFor(ts));
+        }
         _writer.write(sw.toString());
         _writer.write('\n');
         _linesInPart++;
         _totalLines++;
         if (_totalLines % LOG_EVERY == 0)
           _log.warn("inference output: {} records written", _totalLines);
-        if (_linesInPart >= _rollLines)
-          rollPart();
       }
     } catch (final IOException e) {
       _log.error("could not write inferred location record: " + e.getMessage(), e);
     }
   }
 
-  private void openNextPart() throws IOException {
-    String name = String.format("inferred-%03d.ndjson%s", _partIndex, _gzip ? ".gz" : "");
+  /** Window start containing ts, or the current window if ts is unavailable (should not happen). */
+  private long bucketStartFor(Long ts) {
+    if (ts == null)
+      return _currentBucketStart == Long.MIN_VALUE ? 0L : _currentBucketStart;
+    return ts - Math.floorMod(ts, _rollMillis);
+  }
+
+  private void openNextPart(long bucketStart) throws IOException {
+    _currentBucketStart = bucketStart;
+    String name = String.format("inferred-%s.ndjson%s",
+        PART_NAME_FORMAT.format(java.time.Instant.ofEpochMilli(bucketStart)), _gzip ? ".gz" : "");
     _finalPart = new File(_dir, name);
     _currentPart = new File(_dir, name + ".open");
     FileOutputStream fos = new FileOutputStream(_currentPart);
@@ -146,11 +172,10 @@ public class S3OutputQueueSenderServiceImpl implements OutputQueueSenderService 
     _linesInPart = 0;
   }
 
-  private void rollPart() throws IOException {
+  private void rollPart(long newBucketStart) throws IOException {
     _writer.close();
     finishPart();
-    _partIndex++;
-    openNextPart();
+    openNextPart(newBucketStart);
   }
 
   /** Rename marks the part complete; the replay script uploads anything without the .open suffix. */
@@ -169,11 +194,13 @@ public class S3OutputQueueSenderServiceImpl implements OutputQueueSenderService 
         return;
       _closed = true;
       try {
-        _writer.close();
-        if (_linesInPart > 0)
-          finishPart();
-        else
-          _currentPart.delete();
+        if (_writer != null) {
+          _writer.close();
+          if (_linesInPart > 0)
+            finishPart();
+          else
+            _currentPart.delete();
+        }
       } catch (IOException e) {
         _log.error("closing output failed: " + e.getMessage(), e);
       }

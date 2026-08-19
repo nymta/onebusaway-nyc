@@ -87,6 +87,15 @@ public class ReplayFileInputTask implements ServletContextAware, InputTask {
 
   protected static Logger _log = LoggerFactory.getLogger(ReplayFileInputTask.class);
 
+  /** Named, not class-based, so log4j2.xml can route it to its own file regardless of which class
+   * calls it. One line per progress tick: virtual clock, wall elapsed, throughput, ETA, stripes. */
+  private static final Logger _monitorLog = LoggerFactory.getLogger("replay.monitor");
+
+  /** Virtual-time end of the declared --to window, epoch millis, or null if not passed (ETA omitted
+   * rather than guessed). Set by run-replay.sh; a streaming FIFO has no other way to know how much
+   * more data is coming. */
+  private static final Long WINDOW_END_MILLIS = Long.getLong("oba.replay.window.endMillis");
+
   /** How long to wait for the transit graph before giving up. A whole-MTA bundle takes ~4 min. */
   private static final long BUNDLE_WAIT_MS = 15 * 60 * 1000;
 
@@ -246,6 +255,44 @@ public class ReplayFileInputTask implements ServletContextAware, InputTask {
     _executorService.shutdownNow();
   }
 
+  /**
+   * One line to the dedicated monitor log: virtual clock, wall elapsed, throughput both ways
+   * (rec/s and its reciprocal ms/rec, both fleet-wide across every stripe, not a per-record cost),
+   * stripe occupancy, and an ETA and percent-complete when the window's end is known. Called from
+   * both the dispatch and drain progress ticks, so it is the one place that combines "how much has
+   * actually been computed" with "how far the virtual clock has gotten."
+   */
+  private void logMonitor(long wallStart, long firstTs) {
+    final long nowMs = System.currentTimeMillis();
+    final long elapsedMs = nowMs - wallStart;
+    final long virtualNow = _clock.millis();
+    final long completed = _vehicleLocationService.stripesCompletedTaskCount();
+    final double speedX = elapsedMs > 0 ? (virtualNow - firstTs) / (double) elapsedMs : 0.0;
+    final double aggregateRecPerSec = elapsedMs > 0 ? completed * 1000.0 / elapsedMs : 0.0;
+    final double aggregateMsPerRec = aggregateRecPerSec > 0 ? 1000.0 / aggregateRecPerSec : 0.0;
+
+    String eta = "unknown";
+    String pctComplete = "unknown";
+    if (WINDOW_END_MILLIS != null) {
+      final double windowMs = WINDOW_END_MILLIS - firstTs;
+      if (windowMs > 0) {
+        pctComplete = String.format("%.1f%%", 100.0 * (virtualNow - firstTs) / windowMs);
+      }
+      if (speedX > 0.0) {
+        final long remainingVirtualMs = WINDOW_END_MILLIS - virtualNow;
+        final long estRemainingWallMs = (long) (remainingVirtualMs / speedX);
+        eta = java.time.Instant.ofEpochMilli(nowMs + estRemainingWallMs).toString();
+      }
+    }
+
+    _monitorLog.warn(String.format(
+        "virtual_clock=%d wall_elapsed_s=%.0f speed=%.2fx aggregate_rec_s=%.1f aggregate_ms_per_rec=%.2f "
+            + "pct_complete=%s stripes=%d/%d eta=%s",
+        virtualNow, elapsedMs / 1000.0, speedX, aggregateRecPerSec, aggregateMsPerRec, pctComplete,
+        _vehicleLocationService.stripesActiveCount(),
+        _vehicleLocationService.getNumberOfProcessingThreads(), eta));
+  }
+
   private class ReplayThread implements Runnable {
 
     /** Block until the transit graph is loaded. Returns false if it never arrives. */
@@ -395,6 +442,7 @@ public class ReplayFileInputTask implements ServletContextAware, InputTask {
                   _vehicleLocationService.getOutstandingTaskCount(),
                   _vehicleLocationService.stripesActiveCount(),
                   elapsed > 0 ? dispatched * 1000.0 / elapsed : 0.0));
+              logMonitor(wallStart, firstTs);
               lastReadReport = nowMs;
             }
           } else {
@@ -446,6 +494,7 @@ public class ReplayFileInputTask implements ServletContextAware, InputTask {
             "replay: %,d/%,d done (%.1f%%), %,d outstanding, %.1f rec/s, active %d, eta %s, elapsed %.0fs",
             completed, dispatched, pct, remaining, perSec,
             _vehicleLocationService.stripesActiveCount(), eta, (nowMs - drainStart) / 1000.0));
+        logMonitor(wallStart, firstTs);
         lastReport = nowMs;
         lastCompleted = completed;
       }

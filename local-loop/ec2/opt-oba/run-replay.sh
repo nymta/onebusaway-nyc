@@ -12,6 +12,7 @@
 #   REPLAY_CREW_DIR   prefetched UTS snapshots (default /data/uts-snapshots; fetch with
 #                     local-loop/replay/fetch-crew-snapshots.sh). Unset dir -> crew disabled.
 #   REPLAY_THREADS    inference stripes (default: vCPU count minus 2, for the reader and the JVM)
+#   REPLAY_CLOUDWATCH set to 0 to skip pushing replay-monitor.log to CloudWatch (default: on)
 #
 # Chunks are fed through a FIFO in the order given (--prefix sorts keys, chronological for the
 # archive's naming), so multi-chunk windows replay as one continuous stream and nothing is staged
@@ -75,6 +76,26 @@ else
 fi
 LABEL="$(echo "$A" | tr / _)-to-$(echo "$B" | tr / _)-$(date -u +%Y%m%dT%H%M%SZ)"
 
+# Best-effort window end (ET slot -> UTC epoch millis) for the monitor log's ETA. A streaming FIFO
+# has no other way to know how much more data is coming, so this is opt-in: left unset on any
+# parse failure rather than risk a wrong ETA, and the monitor log just reports "unknown" instead.
+WINDOW_END_ARG=()
+end_slot="${TO:-$(echo "$B" | tr _ /)}"
+case "$end_slot" in
+  */*/*|open|"")
+    : ;; # not a single "D/HH-MM" token (multi-segment, or no window given at all) - skip
+  */*)
+    # This locates the --to slot's own START; archive slots are a fixed 5 minutes wide, so add that
+    # to land on the window's actual end instead of its start.
+    end_date="${end_slot%%/*}"; end_hhmm="${end_slot#*/}"
+    # GNU date reads a trailing "+5" right after a time as a UTC offset, not a relative adjustment
+    # (silently landing 9 hours off) - the relative term must come first to parse as "add 5 minutes".
+    end_epoch="$(TZ=America/New_York date -d "+5 minutes $end_date ${end_hhmm/-/:}:00" +%s 2>/dev/null \
+      || TZ=America/New_York date -j -v+5M -f '%Y-%m-%d %H:%M:%S' "$end_date ${end_hhmm/-/:}:00" +%s 2>/dev/null)"
+    [ -n "$end_epoch" ] && WINDOW_END_ARG=(-Doba.replay.window.endMillis="${end_epoch}000")
+    ;;
+esac
+
 # Crew snapshots for the window, fetched if missing (cached days skipped). Slots are ET, crew
 # prefixes UTC generation dates; ET evening slots cross into the next UTC day, so the range is
 # [from .. to+1]. REPLAY_SKIP_CREW_FETCH=1 uses the dir as-is.
@@ -85,7 +106,7 @@ if [ "${REPLAY_SKIP_CREW_FETCH:-0}" != "1" ]; then
     [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9])
       next_day() { date -d "$1 +1 day" +%Y-%m-%d 2>/dev/null || date -j -v+1d -f %Y-%m-%d "$1" +%Y-%m-%d; }
       "$MAIN/local-loop/replay/fetch-crew-snapshots.sh" "$d1" "$(next_day "$d2")" -o "$CREW_DIR" \
-        || echo "WARNING: crew fetch failed; replay uses whatever is already in $CREW_DIR" >&2
+        || { echo "ERROR: crew fetch failed; aborting before a run on a partial roster" >&2; exit 1; }
       ;;
     *) echo "WARNING: no date in '$A' to derive crew window from; skipping crew fetch" >&2 ;;
   esac
@@ -118,12 +139,47 @@ if [ "$OUT_S3" != "none" ]; then
   UPLOAD_PID=$!
 fi
 
+# Reads replay-monitor.log's last line and pushes it to CloudWatch, dimensioned by this run's own
+# label. CLI, not the engine's bundled 2012 SDK (no instance-role support in that SDK at all, only
+# static keys - see EC2-SCALING-FINDINGS.md), so this needs no credentials beyond the instance role
+# already used for S3. REPLAY_CLOUDWATCH=0 disables it.
+push_cloudwatch_metrics() {
+  local line rec_s ms_per_rec pct speed stripes active total metric_data
+  line="$(tail -n 1 "$OUT_DIR/replay-monitor.log" 2>/dev/null)" || return 0
+  [ -n "$line" ] || return 0
+  rec_s="$(echo "$line" | grep -oE 'aggregate_rec_s=[0-9.]+' | cut -d= -f2)"
+  ms_per_rec="$(echo "$line" | grep -oE 'aggregate_ms_per_rec=[0-9.]+' | cut -d= -f2)"
+  pct="$(echo "$line" | grep -oE 'pct_complete=[0-9.]+' | cut -d= -f2)"
+  speed="$(echo "$line" | grep -oE 'speed=[0-9.]+' | cut -d= -f2)"
+  stripes="$(echo "$line" | grep -oE 'stripes=[0-9]+/[0-9]+' | cut -d= -f2)"
+  [ -n "$rec_s" ] && [ -n "$stripes" ] || return 0
+  active="${stripes%%/*}"; total="${stripes#*/}"
+  metric_data=(
+    "MetricName=AggregateRecPerSec,Value=${rec_s},Unit=Count/Second,Dimensions=[{Name=RunId,Value=$LABEL}]"
+    "MetricName=AggregateMsPerRecord,Value=${ms_per_rec:-0},Unit=Milliseconds,Dimensions=[{Name=RunId,Value=$LABEL}]"
+    "MetricName=ActiveStripes,Value=${active},Unit=Count,Dimensions=[{Name=RunId,Value=$LABEL}]"
+    "MetricName=TotalStripes,Value=${total},Unit=Count,Dimensions=[{Name=RunId,Value=$LABEL}]"
+  )
+  [ -n "$pct" ] && metric_data+=("MetricName=PercentComplete,Value=${pct},Unit=Percent,Dimensions=[{Name=RunId,Value=$LABEL}]")
+  # Virtual-time-covered / wall-time-elapsed, e.g. 4.0 for "4x realtime" - not comparable across runs
+  # of very different length, since it's diluted by any drain-phase tail (clock frozen, wall time not).
+  [ -n "$speed" ] && metric_data+=("MetricName=SpeedRealtime,Value=${speed},Unit=None,Dimensions=[{Name=RunId,Value=$LABEL}]")
+  aws cloudwatch put-metric-data --region "${AWS_DEFAULT_REGION:-us-east-1}" \
+    --namespace "OBA/Replay" --metric-data "${metric_data[@]}"
+}
+CLOUDWATCH_PID=""
+if [ "${REPLAY_CLOUDWATCH:-1}" != "0" ]; then
+  ( while :; do sleep 60; push_cloudwatch_metrics; done ) > "$OUT_DIR/cloudwatch.log" 2>&1 &
+  CLOUDWATCH_PID=$!
+fi
+
 FIFO="/tmp/oba-replay-$$.fifo"
 rm -f "$FIFO"; mkfifo "$FIFO"
 FEED_PID=""
 cleanup() {
   [ -n "$FEED_PID" ] && kill "$FEED_PID" 2>/dev/null
   [ -n "$UPLOAD_PID" ] && kill "$UPLOAD_PID" 2>/dev/null
+  [ -n "$CLOUDWATCH_PID" ] && kill "$CLOUDWATCH_PID" 2>/dev/null
   rm -f "$FIFO"
 }
 trap cleanup EXIT INT TERM
@@ -155,6 +211,7 @@ mvn -B -P local-ie-testing -DskipTests -Dlicense.skip=true \
   -Die.output.queue=S3OutputQueueSenderServiceImpl \
   "${OUT_ARGS[@]}" \
   "${CREW_ARGS[@]}" \
+  ${WINDOW_END_ARG[@]+"${WINDOW_END_ARG[@]}"} \
   -Doba.inference.threads="${REPLAY_THREADS:-$REPLAY_THREADS_DEFAULT}" \
   -Dparticle.filter.debug=false \
   -DtimePredictions.status=ENABLED \

@@ -95,3 +95,83 @@ already true in production; replay inherits them rather than introducing new stu
 **Conclusion**: no wall-clock task escapes the gate, and no gated task is being dropped when it
 should instead run against virtual time. The crew solution (a stateless lookup keyed on the virtual
 clock) is a better pattern than rescheduling against virtual time would have been, not a gap.
+
+## 2026-08-19
+
+### 48x vs 24x benchmark: does a second socket help?
+
+To check empirically, the current `oba-nyc-replay` box (`c7i.24xlarge`, single socket, 96 vCPUs) was
+cloned onto a fresh `c7i.48xlarge` (two sockets, 192 vCPUs; `lscpu` confirms NUMA node0=0-47,96-143,
+node1=48-95,144-191) by snapshotting its root + data EBS volumes and attaching the clones to the new
+instance - this carries over the built repo, JDK, bundle, and crew snapshots without re-running the
+bootstrap.
+
+First look was misleading: both boxes reported roughly the same `speed` (virtual-time/wall-time,
+~4x) in `replay-monitor.log`, which read as zero benefit from doubling vCPUs. That comparison doesn't
+hold up: `speed` is diluted by a run's drain-phase tail (the virtual clock freezes once dispatch ends,
+but wall time keeps advancing while the last stripes finish), which eats a much larger fraction of a
+short test run's total time than a multi-day job's - so a finished 15-minute test's `speed` and a
+still-mid-dispatch multi-day job's `speed` are not measuring the same thing. The comparable number is
+`aggregate_rec_s` (fleet-wide completions/wall-time, no virtual-clock semantics), and for the real
+per-record cost, `VehicleLocationInferenceServiceImpl.java:941-951`'s "avg processing time" line (wall
+time inside `ProcessingTask.run()` on the stripe thread itself - compute only, not queue wait).
+
+| Box | avg processing time/task | stripes active (of total) | aggregate rec/s |
+|---|---|---|---|
+| 24x (96 vCPU, 1 socket) | ~66-72ms | 67-78 / 94 | ~847-855 |
+| 48x (192 vCPU, 2 sockets) | ~101-110ms | 132-145 / 190 | ~1097-1158 |
+
+Stripe count roughly doubled (94→190, 2.02x) but per-task time rose ~1.5x with it, netting only
+**~1.28-1.36x** aggregate throughput, not 2x. Both boxes were confirmed CPU/inference-bound, not
+S3-download-bound (throttled% 71-85%, i.e. the reader is mostly waiting on inference to drain, not on
+the network); GC showed no storm signature either. The signature (per-task time rising with core
+count on the same code, same warm-up pattern) points at cross-socket NUMA memory latency on the
+shared ~4.5GB transit graph - a mostly-read structure every stripe's particle-filter step touches, with
+no `-XX:+UseNUMA` or NUMA-aware allocation anywhere in the launch flags, so the heap likely landed
+first-touch on one socket, leaving the other socket's stripes paying a remote-access penalty on every
+read.
+
+The fix that actually removes the penalty is splitting the fleet across two NUMA-pinned JVMs
+(`numactl --cpunodebind=N --membind=N`, one per socket), which needs a new `-Dreplay.vehicleShard=i/n`
+filter in `ReplayFileInputTask` (same shape as `passesRouteFilter`, simpler - no admit-once-then-keep
+semantics needed since a vehicle's hash never changes) plus `run-replay.sh` changes (distinct Jetty
+ports/output dirs/per-shard thread counts so two instances can run on one box without colliding).
+Scoped, not started.
+
+### Sanity check: currently-running week-long replay (`2026-08-10/02-00` to `2026-08-17/01-55`)
+
+Before letting the 24x box's week-long job run for another ~2 days, spot-checked its S3 output
+(`s3://ds-oba/replay/inference-outputs/2026-08-10_02-00-to-2026-08-17_01-55-20260819T055414Z/`, ~26%
+through virtual time at check time) for anything indicating a broken run: part naming/rolling cadence
+(15-min virtual buckets, sizes climbing 558B→~46MB tracking a believable diurnal ridership curve), JSON
+validity (0 malformed lines across a 252,256-record sample), exact-duplicate `(vehicleId,
+recordTimestamp)` pairs (0), phase distribution (74% `IN_PROGRESS`, rest a sane `DEADHEAD`/`LAYOVER`
+split), distinct vehicle count in one 15-min window (~4,808). Nothing here indicates the run is broken.
+
+Three things worth knowing, none blocking:
+
+1. **`depotId` is null in every sampled record.** Expected, not new: `getAssignedDepotForVehicleId`
+   (`VehicleAssignmentServiceImpl.java:198-201`) reads an in-memory map fed only by a live TDM HTTP
+   call (`:80`, `getVehicleListForDepot`), refreshed by a scheduled task that is itself gated off under
+   replay (`OUTPUT` domain, `:136`) - and even without that gate, the refresh only re-fetches depots
+   already present in a map that nothing in the inference path ever seeds (`:117-126` iterates its own
+   possibly-empty `keySet()`; the only method that adds an entry, `getAssignedVehicleIdsForDepot`, is
+   never called here). Unlike UTS crew data, depot assignment has no snapshot-based replay path at all.
+   This is working as intended, not a gap to close: Timothy evaluated fetching the same depot data from
+   SPEAR (another MTA system) and found it made no measurable difference, so it was never merged into
+   his branch and replay doesn't fetch it either. Worth revisiting only if depot data becomes a real
+   blocker later.
+2. **~0.066% (166/252,256) of records in the sampled window have out-of-NYC-bbox coordinates**, a
+   handful of exact values repeated identically across different vehicles and timestamps, always
+   `DEADHEAD_BEFORE`, with `observedLatitude/Longitude` exactly equal to the bad
+   `inferredLatitude/Longitude` - confirms the bad value comes in on the raw archived GPS (or its
+   decode), not introduced by the particle filter.
+3. **~1% of records in a given 15-min output part have a `recordTimestamp` outside that part's own
+   nominal window.** `S3OutputQueueSenderServiceImpl.enqueue()`'s roll condition only advances the
+   bucket forward (`bucketStartFor(ts) > _currentBucketStart`), so a record that finishes computing
+   late (expected under the striped/concurrent engine - completion order isn't perfectly
+   timestamp-ordered) gets filed under whichever bucket happens to be open, not its own true bucket.
+   Not data loss, just a labeling caveat for anyone doing strict per-file time-window analysis on the
+   output later.
+
+**Conclusion**: nothing found warrants stopping the run.

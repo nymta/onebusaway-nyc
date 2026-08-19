@@ -63,7 +63,7 @@ echo "window : $FROM .. $LAST  (lookback day $FROM included)"
 echo "outdir : $OUT"
 echo
 
-CUR="$FROM"; DAYS=0; FILES=0
+CUR="$FROM"; DAYS=0; FILES=0; FAILED_DAYS=0
 while :; do
   if [ -n "$(find "$OUT/$CUR" -name 'crew_*.csv' -print -quit 2>/dev/null)" ]; then
     # Already fetched; a re-run for an overlapping window costs nothing.
@@ -73,15 +73,21 @@ while :; do
   else
     # crew_* only: popi_* is pull-out data, which nothing on the inference path reads today.
     ensure_creds
-    aws s3 cp "s3://$BUCKET/$CUR/" "$OUT/$CUR/" --recursive \
-      --exclude '*' --include 'crew_*.csv' --only-show-errors
-    n=$(find "$OUT/$CUR" -name 'crew_*.csv' 2>/dev/null | wc -l | tr -d ' ')
-    if [ "$n" = "0" ]; then
-      echo "  $CUR  no crew snapshots"
-      rmdir "$OUT/$CUR" 2>/dev/null
+    if aws s3 cp "s3://$BUCKET/$CUR/" "$OUT/$CUR/" --recursive \
+      --exclude '*' --include 'crew_*.csv' --only-show-errors; then
+      n=$(find "$OUT/$CUR" -name 'crew_*.csv' 2>/dev/null | wc -l | tr -d ' ')
+      if [ "$n" = "0" ]; then
+        echo "  $CUR  no crew snapshots"
+        rmdir "$OUT/$CUR" 2>/dev/null
+      else
+        echo "  $CUR  $n snapshots"
+        FILES=$((FILES + n)); DAYS=$((DAYS + 1))
+      fi
     else
-      echo "  $CUR  $n snapshots"
-      FILES=$((FILES + n)); DAYS=$((DAYS + 1))
+      # A real S3/network failure, not "this day has no snapshots" - aws s3 cp --recursive still
+      # exits 0 when a day is legitimately empty, so a nonzero exit here means the copy itself broke.
+      echo "  $CUR  FETCH FAILED (s3 cp returned nonzero)" >&2
+      FAILED_DAYS=$((FAILED_DAYS + 1))
     fi
   fi
   [ "$CUR" = "$LAST" ] && break
@@ -92,6 +98,7 @@ while :; do
   CUR="$NEXT"
 done
 
+[ "$FAILED_DAYS" -eq 0 ] || { echo "$FAILED_DAYS day(s) failed to fetch; aborting rather than replay on a partial roster" >&2; exit 1; }
 [ "$FILES" -gt 0 ] || { echo "nothing fetched" >&2; exit 2; }
 
 # A manifest so a replay result can be tied to the roster that produced it, like the fixture's.

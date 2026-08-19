@@ -292,6 +292,11 @@ public class VehicleLocationInferenceServiceImpl implements
     return n;
   }
 
+  /** Configured stripe count, so a caller can report active/total rather than active alone. */
+  public int getNumberOfProcessingThreads() {
+    return _numberOfProcessingThreads;
+  }
+
   /** Tasks queued but not started, plus tasks running, across every stripe. */
   public int getOutstandingTaskCount() {
     if (_stripes == null)
