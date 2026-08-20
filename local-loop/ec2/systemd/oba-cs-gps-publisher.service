@@ -1,0 +1,17 @@
+[Unit]
+Description=OBA-NYC CS filtered-AVL publisher (ZMQ :5564 -> RabbitMQ exchange)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=oba
+ExecStart=/opt/oba/run-cs-gps-publisher.sh
+Restart=always
+RestartSec=15
+LimitNOFILE=65536
+# Bounded so a publisher fault can never threaten the reference deployment sharing this host.
+MemoryMax=2G
+CPUQuota=200%
+
+[Install]
+WantedBy=multi-user.target

@@ -4,7 +4,8 @@ On-host configuration for the whole-MTA GTFS-RT deployment (see `../EC2-DEPLOYME
 committed for reproducibility. Captured from EC2 `i-0386b6bb8338b2f67` as it runs.
 
 **No secrets in here.** RabbitMQ feed credentials are fetched at runtime from **SSM Parameter
-Store** (`/oba/rabbitmq/*`) by `env-common.sh`'s `gp()` helper; the per-repo GitHub **deploy keys**
+Store** (`/oba/rabbitmq/*`, plus `/rabbitmq/data-pusher/prod/password` for the publisher below) by
+`env-common.sh`'s `gp()` helper; the per-repo GitHub **deploy keys**
 live only in `~oba/.ssh` on the host and are deliberately excluded.
 
 ## File → host path
@@ -14,6 +15,8 @@ live only in `~oba/.ssh` on the host and are deliberately excluded.
 | `opt-oba/env-common.sh` | `/opt/oba/env-common.sh` | shared env + `gp()` (SSM param fetch) |
 | `opt-oba/run-{broker,inference,predictions,gtfsrt,predictions-archiver}.sh` | `/opt/oba/` | service launchers (invoked by the systemd units) |
 | `opt-oba/predictions-archiver.py` | `/opt/oba/predictions-archiver.py` | ZMQ :5568 → hourly `queuePredictions_*.zip` → S3 |
+| `opt-oba/cs-gps-publisher.py` | `/opt/oba/cs-gps-publisher.py` | ZMQ :5564 → RabbitMQ `nyct.bustech.gps-filtered` (opt-in; see below) |
+| `opt-oba/run-cs-gps-publisher.sh` | `/opt/oba/run-cs-gps-publisher.sh` | launcher for the above |
 | `opt-oba/set-weights.sh` | `/opt/oba/set-weights.sh` | reads SSM `/oba/predictions/weights`, POSTs `/api/weight` |
 | `opt-oba/deploy.sh` | `/opt/oba/deploy.sh` | GitHub-Action target (modes `deploy` / `set-weights`) |
 | `opt-oba/monitor.sh` | `/opt/oba/monitor.sh` | emits `OBA/Prod` CloudWatch metrics (run by the timer) |
@@ -30,7 +33,7 @@ live only in `~oba/.ssh` on the host and are deliberately excluded.
 2. Install toolchain (Corretto 11, Maven, git, Docker, nginx); clone the two repos into `/opt/oba` via read-only deploy keys; start `mongo:4.4`.
 3. Drop these files into place, `chmod +x /opt/oba/*.sh`.
 4. Build the bundle (`FederatedTransitDataBundleCreatorMain` + `bundle-wholeMTA.xml`) into `/data/oba-bundle`.
-5. `systemctl daemon-reload && systemctl enable --now oba-broker oba-inference oba-predictions oba-gtfsrt oba-predictions-archiver oba-monitor.timer nginx`.
+5. `systemctl daemon-reload && systemctl enable --now oba-broker oba-inference oba-predictions oba-gtfsrt oba-predictions-archiver oba-monitor.timer nginx`. Add `oba-cs-gps-publisher` only on a host with an allowlisted Elastic IP (see below).
 
 ### Predictions S3 archiver (`predictions-archiver.py`)
 
@@ -57,6 +60,38 @@ compared offline hour-for-hour.
   otherwise the instance profile (`oba-nyc-ec2-role`, inline policy `oba-s3-predictions-archive-write`).
 - **Health:** `journalctl -u oba-predictions-archiver` logs a stats line every
   `OBA_ARCHIVER_LOG_STATS_SEC` (60 s). **Local-only test:** `OBA_ARCHIVER_UPLOAD=false`.
+
+### CS filtered-AVL publisher (`cs-gps-publisher.py`)
+
+Republishes the **~28 s upstream-filtered** AVL feed onto RabbitMQ so hosts without an allowlisted
+Elastic IP can consume it. Deployed 2026-08-20 on `i-0386b6bb8338b2f67`.
+
+- **Why it exists:** `queue.staging.obanyc.com:5564` is source-IP allowlisted to **Elastic IPs only**
+  — prod and `runner-al23` connect instantly, every ephemeral-IP host times out. Rather than move an
+  EIP (prod's is load-bearing: data-archiver polls its hostname for the `obaEc2*` feeds), prod
+  subscribes and fans out over the broker. The publisher only dials **out**, so no inbound SG rule.
+- **Path:** ZMQ SUB (topic `bhs_queue`) → exchange **and** stream queue `nyct.bustech.gps-filtered`
+  (`x-max-age=5m`, matching `nyct.bustech.gps`) → data-archiver feed `bustechGpsFiltered` →
+  `s3://mtalirr/data-archiver/bustechGpsFiltered/` → `run-replay.sh --prefix`.
+- **Fidelity:** bodies are republished **verbatim**; the envelope is parsed only to carry
+  `timeReceived` into the AMQP timestamp, which is what the archiver buckets its 5-minute slots on.
+- **Identity:** publishes as `data-pusher` (the cluster's write-side user). `data-archiver` is
+  read-only (`write=''`) and *cannot* publish.
+- **Opt-in per host:** `OBA_CSPUB_ENABLED=1` in `/opt/oba/env-local.sh`. `deploy.sh` installs the
+  unit everywhere but only enables it where that flag is set — elsewhere it would just retry a
+  connection that always times out.
+- **Health:** `journalctl -u oba-cs-gps-publisher` logs a stats line every 60 s; expect
+  `received==published`, `dropped=0`, `failures=0` at ~160 msg/s. ~16 MB RSS, unit capped at
+  `MemoryMax=2G` / `CPUQuota=200%` so it cannot threaten the reference deployment on the same host.
+- **Caveat:** `x-max-age=5m` means an archiver outage over 5 minutes is a permanent hole — the source
+  is a PUB socket with no offset to rewind.
+
+## Per-host overrides (`/opt/oba/env-local.sh`)
+
+Not installed by `deploy.sh`, so each host keeps its own values across deploys; absent = stock
+behavior. Beyond the deadband/archiver-prefix/monitor keys: `OBA_CSPUB_ENABLED`,
+`OBA_DEADBAND_ENABLED` (set `false` on an arm fed the already-filtered queue, or the gate
+double-filters) and `OBA_RMQ_STREAM_NAME`.
 
 ## Current tuning captured (this commit)
 - inference `-Xmx30g` + ingestion deadband `minMeters=10 / minIntervalSec=7 / maxAgeSec=30` ("7 s-while-moving"; widened from 5 s on 2026-07-22) + stale-fix load-shedding `oba.shed.maxAgeSec=50` — `run-inference.sh`

@@ -10,12 +10,12 @@ exec mvn -B -P local-ie-testing -DskipTests -Dlicense.skip=true \
   -Dorg.onebusaway.nyc.tdm.bundle.batchmode=true \
   -Dbundle.location="$BUNDLE" \
   -Djetty.http.port=8081 \
-  -Doba.deadband.enabled=true -Doba.deadband.minMeters="${OBA_DEADBAND_MIN_METERS:-10}" -Doba.deadband.minIntervalSec="${OBA_DEADBAND_MIN_INTERVAL_SEC:-7}" -Doba.deadband.maxAgeSec="${OBA_DEADBAND_MAX_AGE_SEC:-30}" \
+  -Doba.deadband.enabled="${OBA_DEADBAND_ENABLED:-true}" -Doba.deadband.minMeters="${OBA_DEADBAND_MIN_METERS:-10}" -Doba.deadband.minIntervalSec="${OBA_DEADBAND_MIN_INTERVAL_SEC:-7}" -Doba.deadband.maxAgeSec="${OBA_DEADBAND_MAX_AGE_SEC:-30}" \
   -Doba.shed.maxAgeSec=50 \
   -Doba.rmq.addresses="$(gp /oba/rabbitmq/addresses)" \
   -Doba.rmq.username="$(gp /oba/rabbitmq/username)" \
   -Doba.rmq.password="$(gp /oba/rabbitmq/password)" \
-  -Doba.rmq.streamName="$(gp /oba/rabbitmq/streamName)" \
+  -Doba.rmq.streamName="${OBA_RMQ_STREAM_NAME:-$(gp /oba/rabbitmq/streamName)}" \
   -Doba.rmq.virtualHost="$(gp /oba/rabbitmq/virtualHost)" \
   -Doba.rmq.ssl="$(gp /oba/rabbitmq/ssl)" \
   -Doba.rmq.offset="$(gp /oba/rabbitmq/offset)" \

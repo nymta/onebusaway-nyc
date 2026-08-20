@@ -53,12 +53,24 @@ case "$ACTION" in
     fi
     runuser -u oba -- python3 -m pip install --user -q pyzmq gtfs-realtime-bindings protobuf 2>/dev/null || \
       python3 -m pip install -q pyzmq gtfs-realtime-bindings protobuf
+    echo "== install CS filtered-AVL publisher =="
+    install -m 755 "$SRC/opt-oba/cs-gps-publisher.py" /opt/oba/cs-gps-publisher.py
+    install -m 755 "$SRC/opt-oba/run-cs-gps-publisher.sh" /opt/oba/run-cs-gps-publisher.sh
+    install -m 644 "$SRC/systemd/oba-cs-gps-publisher.service" /etc/systemd/system/oba-cs-gps-publisher.service
+    runuser -u oba -- python3 -m pip install --user -q pyzmq pika 2>/dev/null || python3 -m pip install -q pyzmq pika
     systemctl daemon-reload
     systemctl enable oba-predictions-archiver.service
+    # The source ZMQ queue only answers hosts whose egress is an allowlisted Elastic IP, so the
+    # publisher is opt-in per host via OBA_CSPUB_ENABLED=1 in env-local.sh. Everywhere else the unit
+    # stays installed but inert -- enabling it would just retry a connection that always times out.
+    CSPUB=$( [ -f /opt/oba/env-local.sh ] && ( . /opt/oba/env-local.sh; echo "${OBA_CSPUB_ENABLED:-0}" ) || echo 0 )
+    if [ "$CSPUB" = "1" ]; then systemctl enable oba-cs-gps-publisher.service; else systemctl disable oba-cs-gps-publisher.service 2>/dev/null || true; fi
     echo "== restart services =="
     systemctl restart oba-broker oba-inference oba-predictions oba-gtfsrt oba-predictions-archiver
+    [ "$CSPUB" = "1" ] && systemctl restart oba-cs-gps-publisher
     sleep 20
     echo "== status =="; systemctl is-active oba-broker oba-inference oba-predictions oba-gtfsrt oba-predictions-archiver || true
+    [ "$CSPUB" = "1" ] && { echo "== cs publisher =="; systemctl is-active oba-cs-gps-publisher || true; }
     echo "== smoke (best-effort; apps may still be warming) =="
     curl -s -o /dev/null -w 'gtfsrt /tripUpdates http=%{http_code}\n' 'http://localhost:8083/tripUpdates?debug=true' || true
     ;;
