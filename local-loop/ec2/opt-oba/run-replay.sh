@@ -29,7 +29,8 @@ source /opt/oba/env-common.sh
 export MAVEN_OPTS="${REPLAY_MAVEN_OPTS:--Xmx30g} -Duser.timezone=America/New_York"
 
 # Leave 2 vCPUs free for the reader thread and JVM/OS overhead; never go below 1 stripe.
-REPLAY_THREADS_DEFAULT=$(getconf _NPROCESSORS_ONLN)
+NPROC=$(getconf _NPROCESSORS_ONLN)
+REPLAY_THREADS_DEFAULT=$NPROC
 [ "$REPLAY_THREADS_DEFAULT" -gt 3 ] && REPLAY_THREADS_DEFAULT=$((REPLAY_THREADS_DEFAULT - 2))
 
 SOURCES=(); MVN_EXTRA=(); PREFIX=""; LIMIT=0; FROM=""; TO=""; TO_RAW=""; SHARD=""
@@ -55,11 +56,30 @@ if [ -n "$SHARD" ]; then
   case "$SHARD_COUNT" in ''|*[!0-9]*) echo "ERROR: --shard count must be an integer, got '$SHARD_COUNT'" >&2; exit 2 ;; esac
   [ "$SHARD_INDEX" -lt "$SHARD_COUNT" ] || { echo "ERROR: --shard index $SHARD_INDEX out of range for count $SHARD_COUNT" >&2; exit 2; }
   command -v numactl >/dev/null 2>&1 || { echo "ERROR: --shard needs numactl (dnf install numactl); a shard run without NUMA pinning defeats the point" >&2; exit 2; }
-  REPLAY_THREADS_DEFAULT=$((REPLAY_THREADS_DEFAULT / SHARD_COUNT))
+  # Recompute from each shard's own share of the box's vCPUs, not by dividing the whole-box default -
+  # dividing (NPROC-2) instead would leave only 1 free per shard's own pinned domain, not 2.
+  REPLAY_THREADS_DEFAULT=$((NPROC / SHARD_COUNT))
+  [ "$REPLAY_THREADS_DEFAULT" -gt 3 ] && REPLAY_THREADS_DEFAULT=$((REPLAY_THREADS_DEFAULT - 2))
   [ "$REPLAY_THREADS_DEFAULT" -ge 1 ] || REPLAY_THREADS_DEFAULT=1
   NUMA_PREFIX=(numactl "--cpunodebind=$SHARD_INDEX" "--membind=$SHARD_INDEX")
   SHARD_ARGS=(-Dreplay.vehicleShard="$SHARD_INDEX/$SHARD_COUNT")
   JETTY_PORT=$((8081 + SHARD_INDEX))
+
+  # The webapp's Spring context always opens a local HSQLDB file at
+  # ${bundle.location}/org_onebusaway_database, regardless of profile - it's wired in unconditionally,
+  # not something replay itself touches. Two JVMs pointed at the same bundle.location race for that
+  # file's lock and the loser fails at Hibernate init. Give this shard its own shadow bundle dir:
+  # symlink the real (large, shared, read-only) pick directories in, so nothing gets copied, but leave
+  # out the sibling org_onebusaway_database.* files so HSQLDB creates a fresh, private one here instead.
+  SHARD_BUNDLE_DIR="/data/oba-bundle-shard${SHARD_INDEX}"
+  mkdir -p "$SHARD_BUNDLE_DIR"
+  for d in "$BUNDLE"/*/; do
+    [ -d "$d" ] || continue
+    b="$(basename "$d")"
+    case "$b" in org_onebusaway_database*|onebusaway_nyc*) continue ;; esac
+    ln -sfn "$d" "$SHARD_BUNDLE_DIR/$b"
+  done
+  BUNDLE="$SHARD_BUNDLE_DIR"
 fi
 
 if [ -n "$PREFIX" ]; then
