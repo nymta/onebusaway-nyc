@@ -175,3 +175,105 @@ Three things worth knowing, none blocking:
    output later.
 
 **Conclusion**: nothing found warrants stopping the run.
+
+## 2026-08-21
+
+### 48x two-JVM NUMA split: what actually happened
+
+Built the fleet-split design from the 08-19 entry: `-Dreplay.vehicleShard=i/n` in `ReplayFileInputTask`
+(hashes vehicles across n independent processes, same shape as `passesRouteFilter` but no admission
+cache needed, since a vehicle's hash never changes), plus `run-replay.sh --shard i/n` to wrap each
+process in `numactl --cpunodebind=i --membind=i`, offset its Jetty port, halve its thread default
+correctly (per-shard vCPU share minus 2, not the whole-box default divided by n - those give different
+numbers), and suffix its `LABEL`/`OUT_DIR`/`OUT_S3`/CloudWatch `RunId` so two shards never collide.
+
+Hit one real bug before it ran clean: both JVMs opened the same local HSQLDB file
+(`${bundle.location}/org_onebusaway_database`, wired in unconditionally by the container framework's
+bean graph regardless of profile - nothing replay-specific about it), and the second process to start
+lost the file-lock race and died in `SessionFactory` bootstrap. Fixed by giving each shard a shadow
+bundle directory (symlinks to the real, large, read-only pick data, so nothing gets copied, but no
+`org_onebusaway_database*` sibling files) so each JVM gets its own private copy of that scratch DB.
+
+Once fixed, per-task processing time (`VehicleLocationInferenceServiceImpl.java:941-951`'s "avg
+processing time") came back at **~50-63ms per shard** - not just back to the single-socket 24x
+baseline (~66-72ms), better than it, plausibly because each shard's smaller vehicle population is a
+smaller, more cache-friendly working set on top of the NUMA penalty being genuinely gone. The NUMA fix
+is confirmed at the mechanism level, not just inferred from a throughput number.
+
+Combined throughput still landed short of the ~1.8-1.9x hoped for: ~1275-1400 rec/s combined
+(24x baseline ~850-900), roughly 1.5-1.6x. Traced to stripe utilization, not compute speed: each shard
+only kept ~40 of its 94 stripes busy at once (down from ~64-76/94 for the single-JVM full-fleet run).
+
+Leading hypothesis: the reader's backlog stays pinned at `maxOutstanding=2000` almost continuously
+(`tasks pending` sits at ~2000 in every sample; the reader reports 84% throttled), which bounds how far
+ahead in virtual time it can ever get. Within that fixed, narrow window, the vehicle-shard filter
+discards half of every distinct vehicle before dispatch - so for the same window width, a shard sees
+roughly half as many distinct vehicles as the single-JVM run did, which halves how many stripes can
+ever be simultaneously busy. Matches the observed magnitude (~70 -> ~40). Checked and ruled out a
+sharper alternative: correlated hashing between the shard filter and stripe assignment, which would
+deterministically starve half the stripes given `_stripes.length=94` is even. Decompiled
+`AgencyAndId.hashCode()` (`93 + agencyId.hashCode() + id.hashCode()`) against the filter's
+`String`-concatenation hash and confirmed they're different formulas, not the same value reduced two
+ways. Other candidates not yet checked: uneven hash distribution across 94 stripes for ~2500 vehicles,
+rejected records (`rejected=358,705` vs `dispatched=168,061` in one run) concentrating on fewer
+vehicles than raw volume suggests, and the "processing X of 94" log line only sampling once every 1000
+global completions (a possible bias if completions come in bursts).
+
+(Also reconfirmed: comparing this run's own `speed` field against the 24x box's actual 30.5-hour
+full-week average is the same non-comparison as before - short-run drain/warm-up dilution versus a
+clean multi-day steady state. `aggregate_rec_s` is still the number that means anything across runs of
+different length.)
+
+### `maxOutstanding`'s real ceiling, and an untried lever
+
+`maxOutstanding` sits at 2000 not for throughput reasons but to stay under
+`BundleManagementServiceImpl.MAX_EXPECTED_THREADS=3000` (`:84`) - a defensive sanity ceiling on live
+bundle-switch bookkeeping (`registerInferenceProcessingThread`, `:349-357`), sized for production load
+that was never expected to get close to it. Its cleanup (`removeDeadInferenceThreads`, `:548-562`)
+only removes *finished* tasks; if outstanding ever sits permanently above 3000 nothing is ever finished
+long enough to prune, and the list grows unbounded for the rest of the run - the O(n²) failure already
+documented once in this project.
+
+Replay never requests a bundle switch (single fixed bundle for the whole window, already an
+established precondition), so this bookkeeping is dead weight here. Plan: gate
+`registerInferenceProcessingThread` off entirely under replay (one early return, not a higher number -
+raising the threshold instead trades the CPU-cost problem for an unbounded memory leak, since nothing
+else would ever prune the list). That decouples `maxOutstanding` from this ceiling
+(`getOutstandingTaskCount()` is separate, cheap, JDK-native per-stripe bookkeeping with no growth
+problem of its own), opening room to raise it and widen the lookahead window against the filter-dilution
+problem above. Not yet tried. Caveats: unmeasured, not a guaranteed fix (could plateau on some other
+ceiling); and disabling the tracking bets on the audited assumption (no code path ever calls
+`changeBundle()` during replay) continuing to hold, not on a proof that it always will.
+
+### Considered alternative: split by time instead of by vehicle
+
+Splitting the calendar window instead of the fleet - each shard runs the *full* fleet for a disjoint
+half of the week (plain `--from`/`--to`, no vehicle filter needed at all) - would give each shard the
+same per-vehicle concurrency density as the single-JVM baseline instead of a diluted one, which should
+close most of the utilization gap above. It would also simplify output handling: two disjoint,
+sequential time ranges don't need the per-record interleave-by-timestamp merge the vehicle-split
+design requires, since there's no overlap to reconcile.
+
+The real cost: whatever's held in memory per vehicle (`VehicleInferenceInstance`'s particle
+population, `_previousObservation`, motion/journey state) lives in one JVM's heap and has no
+serialization or handoff path to another process. Any vehicle actively mid-trip at the split boundary
+loses that state entirely and reconverges cold in the second shard - not a new *kind* of event (a
+genuine reporting gap already resets a vehicle's particle filter today), but forced onto potentially
+most of the active fleet simultaneously, at one artificial instant, rather than scattered organically
+across whenever each vehicle happens to have a real gap.
+
+One mitigation considered and rejected: pick the split boundary during a low-activity window (e.g.
+~3-4am) to minimize how many vehicles are affected. Rejected because it specifically degrades
+whatever's running overnight - and late-night service is a realistic thing to actually want accurate
+data on, not a throwaway period. Concentrating the accuracy cost exactly on the window someone might
+later want to study defeats the point.
+
+A second mitigation is still open, but not yet trustworthy as stated: overlap the two shards' windows
+and discard the second shard's output until its particles have had time to reconverge, keeping only
+its output past that warm-up buffer. This assumes the two shards would agree on trip/block matching by
+the end of the overlap - but multithreaded determinism has only been verified for the *same* inputs
+under different thread interleaving, over a small window (`replay-determinism.sh`). It has not been
+verified for two runs of the same window where one shard has real per-vehicle history going into it
+and the other starts cold. Whether a cold-started shard's particle filter actually reconverges to the
+*same* trip/block match the continuously-run shard would have reached, by the end of whatever overlap
+is chosen, is unverified - not something to assume safe without checking.
