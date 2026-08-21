@@ -4,8 +4,15 @@
 #
 # Usage:
 #   run-replay.sh --prefix s3://mtalirr/data-archiver/bustechGps/ [--from D[/HH-MM]] [--to D[/HH-MM]]
-#                 [--limit N] [extra -D args...]     (D = YYYY-MM-DD, HH-MM = ET slot start)
+#                 [--limit N] [--shard i/n] [extra -D args...]  (D = YYYY-MM-DD, HH-MM = ET slot start)
 #   run-replay.sh s3://BUCKET/key1.jsonl.gz [s3://BUCKET/key2.jsonl.gz ...] [extra -D args...]
+#
+# --shard i/n: runs only 1/n of the fleet (vehicle-hash partitioned), for splitting a run across N
+# independent processes - e.g. one per NUMA node. When given, this run's own LABEL/OUT_DIR/OUT_S3/
+# CloudWatch RunId get a "-shardI" suffix, its Jetty port is offset by i so N of these can run on one
+# box at once, oba.inference.threads defaults to this box's share (REPLAY_THREADS still overrides),
+# and the mvn invocation is wrapped in `numactl --cpunodebind=i --membind=i` (requires numactl
+# installed). Omit --shard entirely for a plain, single-process run - nothing above applies.
 #
 # Environment:
 #   REPLAY_OUT_S3     s3://bucket/prefix for inference output parts (default: none, spool stays local)
@@ -25,18 +32,35 @@ export MAVEN_OPTS="${REPLAY_MAVEN_OPTS:--Xmx30g} -Duser.timezone=America/New_Yor
 REPLAY_THREADS_DEFAULT=$(getconf _NPROCESSORS_ONLN)
 [ "$REPLAY_THREADS_DEFAULT" -gt 3 ] && REPLAY_THREADS_DEFAULT=$((REPLAY_THREADS_DEFAULT - 2))
 
-SOURCES=(); MVN_EXTRA=(); PREFIX=""; LIMIT=0; FROM=""; TO=""; TO_RAW=""
+SOURCES=(); MVN_EXTRA=(); PREFIX=""; LIMIT=0; FROM=""; TO=""; TO_RAW=""; SHARD=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --prefix) PREFIX="$2"; shift 2 ;;
     --limit)  LIMIT="$2"; shift 2 ;;
     --from)   FROM="$2"; shift 2 ;;
     --to)     TO="$2"; TO_RAW="$2"; shift 2 ;;
+    --shard)  SHARD="$2"; shift 2 ;;
     s3://*)   SOURCES+=("$1"); shift ;;
     -D*)      MVN_EXTRA+=("$1"); shift ;;
     *) echo "unrecognized argument: $1" >&2; exit 2 ;;
   esac
 done
+
+# Everything in this block is a no-op unless --shard was actually given, so a plain invocation
+# behaves exactly as before it existed.
+SHARD_INDEX=""; SHARD_COUNT=""; NUMA_PREFIX=(); SHARD_ARGS=(); JETTY_PORT=8081
+if [ -n "$SHARD" ]; then
+  SHARD_INDEX="${SHARD%%/*}"; SHARD_COUNT="${SHARD#*/}"
+  case "$SHARD_INDEX" in ''|*[!0-9]*) echo "ERROR: --shard index must be an integer, got '$SHARD_INDEX'" >&2; exit 2 ;; esac
+  case "$SHARD_COUNT" in ''|*[!0-9]*) echo "ERROR: --shard count must be an integer, got '$SHARD_COUNT'" >&2; exit 2 ;; esac
+  [ "$SHARD_INDEX" -lt "$SHARD_COUNT" ] || { echo "ERROR: --shard index $SHARD_INDEX out of range for count $SHARD_COUNT" >&2; exit 2; }
+  command -v numactl >/dev/null 2>&1 || { echo "ERROR: --shard needs numactl (dnf install numactl); a shard run without NUMA pinning defeats the point" >&2; exit 2; }
+  REPLAY_THREADS_DEFAULT=$((REPLAY_THREADS_DEFAULT / SHARD_COUNT))
+  [ "$REPLAY_THREADS_DEFAULT" -ge 1 ] || REPLAY_THREADS_DEFAULT=1
+  NUMA_PREFIX=(numactl "--cpunodebind=$SHARD_INDEX" "--membind=$SHARD_INDEX")
+  SHARD_ARGS=(-Dreplay.vehicleShard="$SHARD_INDEX/$SHARD_COUNT")
+  JETTY_PORT=$((8081 + SHARD_INDEX))
+fi
 
 if [ -n "$PREFIX" ]; then
   bucket="${PREFIX#s3://}"; bucket="${bucket%%/*}"
@@ -75,6 +99,7 @@ else
   A="$(slot_of "${SOURCES[0]}")"; B="$(slot_of "${SOURCES[${#SOURCES[@]}-1]}")"
 fi
 LABEL="$(echo "$A" | tr / _)-to-$(echo "$B" | tr / _)-$(date -u +%Y%m%dT%H%M%SZ)"
+[ -n "$SHARD_INDEX" ] && LABEL="${LABEL}-shard${SHARD_INDEX}"
 
 # Best-effort window end (ET slot -> UTC epoch millis) for the monitor log's ETA. A streaming FIFO
 # has no other way to know how much more data is coming, so this is opt-in: left unset on any
@@ -144,7 +169,7 @@ fi
 # static keys - see EC2-SCALING-FINDINGS.md), so this needs no credentials beyond the instance role
 # already used for S3. REPLAY_CLOUDWATCH=0 disables it.
 push_cloudwatch_metrics() {
-  local line rec_s ms_per_rec pct speed stripes active total metric_data
+  local line rec_s ms_per_rec pct speed stripes active total metric_data disk_pct
   line="$(tail -n 1 "$OUT_DIR/replay-monitor.log" 2>/dev/null)" || return 0
   [ -n "$line" ] || return 0
   rec_s="$(echo "$line" | grep -oE 'aggregate_rec_s=[0-9.]+' | cut -d= -f2)"
@@ -164,6 +189,9 @@ push_cloudwatch_metrics() {
   # Virtual-time-covered / wall-time-elapsed, e.g. 4.0 for "4x realtime" - not comparable across runs
   # of very different length, since it's diluted by any drain-phase tail (clock frozen, wall time not).
   [ -n "$speed" ] && metric_data+=("MetricName=SpeedRealtime,Value=${speed},Unit=None,Dimensions=[{Name=RunId,Value=$LABEL}]")
+  # /data holds the local spool before upload; a long run that outpaces the upload loop fills it silently.
+  disk_pct="$(df -P /data 2>/dev/null | awk 'NR==2 {gsub("%","",$5); print $5}')"
+  [ -n "$disk_pct" ] && metric_data+=("MetricName=DataDiskUsedPct,Value=${disk_pct},Unit=Percent,Dimensions=[{Name=RunId,Value=$LABEL}]")
   aws cloudwatch put-metric-data --region "${AWS_DEFAULT_REGION:-us-east-1}" \
     --namespace "OBA/Replay" --metric-data "${metric_data[@]}"
 }
@@ -203,6 +231,7 @@ echo
 FEED_PID=$!
 
 cd "$MAIN/onebusaway-nyc-vehicle-tracking-webapp"
+${NUMA_PREFIX[@]+"${NUMA_PREFIX[@]}"} \
 mvn -B -P local-ie-testing -DskipTests -Dlicense.skip=true \
   -Dspring.profiles.active=replay \
   -Die.listener=ReplayFileInputTask \
@@ -212,12 +241,13 @@ mvn -B -P local-ie-testing -DskipTests -Dlicense.skip=true \
   "${OUT_ARGS[@]}" \
   "${CREW_ARGS[@]}" \
   ${WINDOW_END_ARG[@]+"${WINDOW_END_ARG[@]}"} \
+  ${SHARD_ARGS[@]+"${SHARD_ARGS[@]}"} \
   -Doba.inference.threads="${REPLAY_THREADS:-$REPLAY_THREADS_DEFAULT}" \
   -Dparticle.filter.debug=false \
   -DtimePredictions.status=ENABLED \
   -Dorg.onebusaway.nyc.tdm.bundle.batchmode=true \
   -Dbundle.location="$BUNDLE" \
-  -Djetty.http.port=8081 \
+  -Djetty.http.port="$JETTY_PORT" \
   -Doba.deadband.enabled=true -Doba.deadband.minMeters=10 -Doba.deadband.minIntervalSec=7 -Doba.deadband.maxAgeSec=30 \
   ${MVN_EXTRA[@]+"${MVN_EXTRA[@]}"} \
   "$JETTY" 2>&1 | tee "$OUT_DIR/engine.log"

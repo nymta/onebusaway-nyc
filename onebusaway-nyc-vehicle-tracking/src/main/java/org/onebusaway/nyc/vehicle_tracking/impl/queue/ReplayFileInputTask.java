@@ -165,6 +165,25 @@ public class ReplayFileInputTask implements ServletContextAware, InputTask {
     _admittedVehicles.add(vehicleKey);
     return true;
   }
+
+  /**
+   * -Dreplay.vehicleShard=<i>/<n> partitions the fleet across n independent processes running this
+   * same window (e.g. one per NUMA node, each pinned via numactl), each launched with a different i.
+   * A vehicle's hash never changes, so unlike passesRouteFilter this needs no per-vehicle admission
+   * cache - the same vehicle always resolves to the same shard.
+   */
+  private int _shardIndex = -1;
+  private int _shardCount = 0;
+
+  private boolean passesVehicleShardFilter(RealtimeEnvelope record) {
+    if (_shardCount <= 0)
+      return true;
+    final tcip_final_3_0_5_1.CcLocationReport m = record.getCcLocationReport();
+    if (m == null || m.getVehicle() == null)
+      return false;
+    final String vehicleKey = m.getVehicle().getAgencydesignator() + "_" + m.getVehicle().getVehicleId();
+    return Math.floorMod(vehicleKey.hashCode(), _shardCount) == _shardIndex;
+  }
   private ExecutorService _executorService = null;
 
   /** Reads the archive wrapper only. The envelope inside is still parsed by the input service. */
@@ -241,6 +260,20 @@ public class ReplayFileInputTask implements ServletContextAware, InputTask {
       _routeFilter = Pattern.compile(routeFilter);
       _log.warn("replay: route filter '" + routeFilter
           + "'; vehicles admitted on their first matching DSC");
+    }
+
+    String vehicleShard = System.getProperty("replay.vehicleShard", "").trim();
+    if (!vehicleShard.isEmpty()) {
+      final String[] parts = vehicleShard.split("/");
+      if (parts.length != 2)
+        throw new IllegalArgumentException(
+            "replay.vehicleShard must be '<i>/<n>', got '" + vehicleShard + "'");
+      _shardIndex = Integer.parseInt(parts[0].trim());
+      _shardCount = Integer.parseInt(parts[1].trim());
+      if (_shardIndex < 0 || _shardIndex >= _shardCount)
+        throw new IllegalArgumentException(
+            "replay.vehicleShard index " + _shardIndex + " out of range for count " + _shardCount);
+      _log.warn("replay: vehicle shard " + _shardIndex + "/" + _shardCount);
     }
 
     _inputService.setDepotPartitionKey(_depotPartitionKey);
@@ -399,7 +432,7 @@ public class ReplayFileInputTask implements ServletContextAware, InputTask {
           // filtered subset's.
           _clock.advanceTo(ts);
 
-          if (!passesRouteFilter(record)) {
+          if (!passesRouteFilter(record) || !passesVehicleShardFilter(record)) {
             filtered++;
             continue;
           }

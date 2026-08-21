@@ -82,9 +82,12 @@ public class S3OutputQueueSenderServiceImpl implements OutputQueueSenderService 
   private boolean _isPrimaryInferenceInstance = true;
   private String _primaryHostname = null;
 
+  // ET, not UTC, so part names read the same way the rest of the operation talks about time
+  // (archive slot names, --from/--to). 'ET' rather than 'Z': the offset shifts with DST, and this
+  // avoids a literal 'Z' (UTC/Zulu) suffix on a non-UTC timestamp.
   private static final java.time.format.DateTimeFormatter PART_NAME_FORMAT =
-      java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'")
-          .withZone(java.time.ZoneOffset.UTC);
+      java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'ET'")
+          .withZone(java.time.ZoneId.of("America/New_York"));
 
   private File _dir;
   private long _rollMillis;
