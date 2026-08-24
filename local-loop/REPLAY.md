@@ -1,8 +1,8 @@
 # Replay: what was changed and why
 
 Worklog for making the inference engine replay archived AVL on data time. One entry per change, newest
-last. Determinism is its own problem — see [determinism/SINGLE-THREAD-DETERMINISM.md](determinism/SINGLE-THREAD-DETERMINISM.md)
-and [determinism/MULTITHREAD-DETERMINISM.md](determinism/MULTITHREAD-DETERMINISM.md).
+last. Determinism is its own problem — see [determinism/DETERMINISM.md](determinism/DETERMINISM.md).
+Sharding strategies (and why they're currently blocked) are in [SHARDING.md](SHARDING.md).
 
 External inputs and their current status: [replay/EXTERNAL-DEPENDENCIES.md](replay/EXTERNAL-DEPENDENCIES.md).
 
