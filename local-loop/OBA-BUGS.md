@@ -5,7 +5,8 @@ that work.
 
 Scope is deliberately narrow: everything here affects **production**. Defects that only matter when you
 need repeatable output, or need "now" to mean something other than the wall clock, are in
-[DETERMINISM.md](determinism/DETERMINISM.md) instead.
+[SINGLE-THREAD-DETERMINISM.md](determinism/SINGLE-THREAD-DETERMINISM.md) and
+[MULTITHREAD-DETERMINISM.md](determinism/MULTITHREAD-DETERMINISM.md) instead.
 
 Each entry states how strongly it is established:
 
