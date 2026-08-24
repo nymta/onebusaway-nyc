@@ -83,6 +83,12 @@ public class BundleManagementServiceImpl implements BundleManagementService {
 
   	private static final int MAX_EXPECTED_THREADS = 3000;
 
+  	// this bookkeeping lets a live bundle switch wait for in-flight threads on the old bundle; a
+  	// caller that never switches bundles (replay) can skip it via this property, rather than being
+  	// bound by MAX_EXPECTED_THREADS, since its sweep only removes finished tasks.
+  	private static final boolean BUNDLE_SWITCH_TRACKING_DISABLED =
+  	    "true".equals(System.getProperty("oba.bundleSwitchTracking.disabled"));
+
 	private static Logger _log = LoggerFactory.getLogger(BundleManagementServiceImpl.class);
 
 	private List<BundleItem> _allBundles = new ArrayList<BundleItem>();
@@ -348,6 +354,8 @@ public class BundleManagementServiceImpl implements BundleManagementService {
 	// bundles cannot be changed as long as threads are actively using it.
 	@Override
 	public void registerInferenceProcessingThread(Future thread) {
+		if (BUNDLE_SWITCH_TRACKING_DISABLED)
+			return;
 		_inferenceProcessingThreads.add(thread);
 
 		// keep our thread list from getting /too/ big unnecessarily

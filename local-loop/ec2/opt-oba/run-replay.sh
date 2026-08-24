@@ -274,6 +274,8 @@ mvn -B -P local-ie-testing -DskipTests -Dlicense.skip=true \
   -DtimePredictions.status=ENABLED \
   -Dorg.onebusaway.nyc.tdm.bundle.batchmode=true \
   -Dbundle.location="$BUNDLE" \
+  -Doba.bundleSwitchTracking.disabled=true \
+  `# replay never switches bundles, so this bookkeeping (capped at MAX_EXPECTED_THREADS=3000) is skipped` \
   -Djetty.http.port="$JETTY_PORT" \
   -Doba.deadband.enabled=true -Doba.deadband.minMeters=10 -Doba.deadband.minIntervalSec=7 -Doba.deadband.maxAgeSec=30 \
   ${MVN_EXTRA[@]+"${MVN_EXTRA[@]}"} \
