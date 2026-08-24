@@ -4,7 +4,8 @@
 #
 # Usage:
 #   run-replay.sh --prefix s3://mtalirr/data-archiver/bustechGps/ [--from D[/HH-MM]] [--to D[/HH-MM]]
-#                 [--limit N] [--shard i/n] [extra -D args...]  (D = YYYY-MM-DD, HH-MM = ET slot start)
+#                 [--limit N] [--shard i/n] [--tag NAME] [extra -D args...]
+#                 (D = YYYY-MM-DD, HH-MM = ET slot start)
 #   run-replay.sh s3://BUCKET/key1.jsonl.gz [s3://BUCKET/key2.jsonl.gz ...] [extra -D args...]
 #
 # --shard i/n: runs only 1/n of the fleet (vehicle-hash partitioned), for splitting a run across N
@@ -13,6 +14,8 @@
 # box at once, oba.inference.threads defaults to this box's share (REPLAY_THREADS still overrides),
 # and the mvn invocation is wrapped in `numactl --cpunodebind=i --membind=i` (requires numactl
 # installed). Omit --shard entirely for a plain, single-process run - nothing above applies.
+# --tag NAME: prefixes NAME- onto this run's LABEL (and hence OUT_DIR/OUT_S3/CloudWatch RunId), so
+# related runs are easy to pick out by eye rather than by timestamp alone.
 #
 # Environment:
 #   REPLAY_OUT_S3     s3://bucket/prefix for inference output parts (default: none, spool stays local)
@@ -33,7 +36,7 @@ NPROC=$(getconf _NPROCESSORS_ONLN)
 REPLAY_THREADS_DEFAULT=$NPROC
 [ "$REPLAY_THREADS_DEFAULT" -gt 3 ] && REPLAY_THREADS_DEFAULT=$((REPLAY_THREADS_DEFAULT - 2))
 
-SOURCES=(); MVN_EXTRA=(); PREFIX=""; LIMIT=0; FROM=""; TO=""; TO_RAW=""; SHARD=""
+SOURCES=(); MVN_EXTRA=(); PREFIX=""; LIMIT=0; FROM=""; TO=""; TO_RAW=""; SHARD=""; TAG=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --prefix) PREFIX="$2"; shift 2 ;;
@@ -41,6 +44,7 @@ while [ $# -gt 0 ]; do
     --from)   FROM="$2"; shift 2 ;;
     --to)     TO="$2"; TO_RAW="$2"; shift 2 ;;
     --shard)  SHARD="$2"; shift 2 ;;
+    --tag)    TAG="$2"; shift 2 ;;
     s3://*)   SOURCES+=("$1"); shift ;;
     -D*)      MVN_EXTRA+=("$1"); shift ;;
     *) echo "unrecognized argument: $1" >&2; exit 2 ;;
@@ -118,8 +122,10 @@ if [ -n "$FROM" ] || [ -n "$TO_RAW" ]; then
 else
   A="$(slot_of "${SOURCES[0]}")"; B="$(slot_of "${SOURCES[${#SOURCES[@]}-1]}")"
 fi
-LABEL="$(echo "$A" | tr / _)-to-$(echo "$B" | tr / _)-$(date -u +%Y%m%dT%H%M%SZ)"
+RUN_TS="$(TZ=America/New_York date +%Y%m%dT%H%M%SET)"
+LABEL="${RUN_TS}-$(echo "$A" | tr / _)-to-$(echo "$B" | tr / _)"
 [ -n "$SHARD_INDEX" ] && LABEL="${LABEL}-shard${SHARD_INDEX}"
+[ -n "$TAG" ] && LABEL="${TAG}-${LABEL}"
 
 # Best-effort window end (ET slot -> UTC epoch millis) for the monitor log's ETA. A streaming FIFO
 # has no other way to know how much more data is coming, so this is opt-in: left unset on any
@@ -189,7 +195,7 @@ fi
 # static keys - see EC2-SCALING-FINDINGS.md), so this needs no credentials beyond the instance role
 # already used for S3. REPLAY_CLOUDWATCH=0 disables it.
 push_cloudwatch_metrics() {
-  local line rec_s ms_per_rec pct speed stripes active total metric_data disk_pct
+  local line rec_s ms_per_rec pct speed stripes active total metric_data dims disk_pct
   line="$(tail -n 1 "$OUT_DIR/replay-monitor.log" 2>/dev/null)" || return 0
   [ -n "$line" ] || return 0
   rec_s="$(echo "$line" | grep -oE 'aggregate_rec_s=[0-9.]+' | cut -d= -f2)"
@@ -199,19 +205,20 @@ push_cloudwatch_metrics() {
   stripes="$(echo "$line" | grep -oE 'stripes=[0-9]+/[0-9]+' | cut -d= -f2)"
   [ -n "$rec_s" ] && [ -n "$stripes" ] || return 0
   active="${stripes%%/*}"; total="${stripes#*/}"
+  dims="{Name=RunId,Value=$LABEL}"
   metric_data=(
-    "MetricName=AggregateRecPerSec,Value=${rec_s},Unit=Count/Second,Dimensions=[{Name=RunId,Value=$LABEL}]"
-    "MetricName=AggregateMsPerRecord,Value=${ms_per_rec:-0},Unit=Milliseconds,Dimensions=[{Name=RunId,Value=$LABEL}]"
-    "MetricName=ActiveStripes,Value=${active},Unit=Count,Dimensions=[{Name=RunId,Value=$LABEL}]"
-    "MetricName=TotalStripes,Value=${total},Unit=Count,Dimensions=[{Name=RunId,Value=$LABEL}]"
+    "MetricName=AggregateRecPerSec,Value=${rec_s},Unit=Count/Second,Dimensions=[$dims]"
+    "MetricName=AggregateMsPerRecord,Value=${ms_per_rec:-0},Unit=Milliseconds,Dimensions=[$dims]"
+    "MetricName=ActiveStripes,Value=${active},Unit=Count,Dimensions=[$dims]"
+    "MetricName=TotalStripes,Value=${total},Unit=Count,Dimensions=[$dims]"
   )
-  [ -n "$pct" ] && metric_data+=("MetricName=PercentComplete,Value=${pct},Unit=Percent,Dimensions=[{Name=RunId,Value=$LABEL}]")
+  [ -n "$pct" ] && metric_data+=("MetricName=PercentComplete,Value=${pct},Unit=Percent,Dimensions=[$dims]")
   # Virtual-time-covered / wall-time-elapsed, e.g. 4.0 for "4x realtime" - not comparable across runs
   # of very different length, since it's diluted by any drain-phase tail (clock frozen, wall time not).
-  [ -n "$speed" ] && metric_data+=("MetricName=SpeedRealtime,Value=${speed},Unit=None,Dimensions=[{Name=RunId,Value=$LABEL}]")
+  [ -n "$speed" ] && metric_data+=("MetricName=SpeedRealtime,Value=${speed},Unit=None,Dimensions=[$dims]")
   # /data holds the local spool before upload; a long run that outpaces the upload loop fills it silently.
   disk_pct="$(df -P /data 2>/dev/null | awk 'NR==2 {gsub("%","",$5); print $5}')"
-  [ -n "$disk_pct" ] && metric_data+=("MetricName=DataDiskUsedPct,Value=${disk_pct},Unit=Percent,Dimensions=[{Name=RunId,Value=$LABEL}]")
+  [ -n "$disk_pct" ] && metric_data+=("MetricName=DataDiskUsedPct,Value=${disk_pct},Unit=Percent,Dimensions=[$dims]")
   aws cloudwatch put-metric-data --region "${AWS_DEFAULT_REGION:-us-east-1}" \
     --namespace "OBA/Replay" --metric-data "${metric_data[@]}"
 }
