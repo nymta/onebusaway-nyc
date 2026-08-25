@@ -182,7 +182,28 @@ public class ReplayFileInputTask implements ServletContextAware, InputTask {
     if (m == null || m.getVehicle() == null)
       return false;
     final String vehicleKey = m.getVehicle().getAgencydesignator() + "_" + m.getVehicle().getVehicleId();
-    return Math.floorMod(vehicleKey.hashCode(), _shardCount) == _shardIndex;
+    return Math.floorMod(mix(vehicleKey.hashCode()), _shardCount) == _shardIndex;
+  }
+
+  /**
+   * MurmurHash3's 32-bit finalizer, applied before reducing by shardCount. Without this, shard
+   * assignment correlated exactly with stripe assignment (VehicleLocationInferenceServiceImpl's
+   * Math.floorMod(vehicleId.hashCode(), 94)) at n=2: both formulas add an odd constant (93 there,
+   * the '_' separator's code 95 here) to the same underlying per-character sum, and because 31 is
+   * odd, a Java String's hashCode has the same parity as that sum - so the two hashes always agreed
+   * on parity, and since 94 is even, that parity is the stripe index's own parity. Each shard ended
+   * up with exactly half of _stripes permanently empty (confirmed: shard 0 only ever produced
+   * even-numbered stripes, shard 1 only odd). This mix has full avalanche - changing one input bit
+   * flips ~half the output bits - so it can't share a simple structural correlation like that with
+   * an unrelated hash.
+   */
+  private static int mix(int h) {
+    h ^= h >>> 16;
+    h *= 0x85ebca6b;
+    h ^= h >>> 13;
+    h *= 0xc2b2ae35;
+    h ^= h >>> 16;
+    return h;
   }
   private ExecutorService _executorService = null;
 
