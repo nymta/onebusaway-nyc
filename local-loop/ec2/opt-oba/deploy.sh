@@ -33,7 +33,7 @@ case "$ACTION" in
     run_oba "export JAVA_HOME=$JH PATH=$JH/bin:\$PATH MAVEN_OPTS=-Xmx4g; cd /opt/oba/onebusaway-nyc-predictions && mvn -B -q -pl onebusaway-nyc-predictions-common,onebusaway-nyc-predictions-webapp -DskipTests -Dlicense.skip=true install"
     echo "== install host scripts =="
     SRC=/opt/oba/onebusaway-nyc/local-loop/ec2
-    for f in env-common.sh run-broker.sh run-inference.sh run-predictions.sh run-gtfsrt.sh run-replay.sh deploy.sh monitor.sh set-weights.sh; do
+    for f in env-common.sh run-broker.sh run-inference.sh run-predictions.sh run-gtfsrt.sh run-replay.sh build-replay.sh deploy.sh monitor.sh set-weights.sh; do
       install -m 755 "$SRC/opt-oba/$f" "/opt/oba/$f"
     done
     echo "== install predictions archiver =="
