@@ -277,3 +277,45 @@ verified for two runs of the same window where one shard has real per-vehicle hi
 and the other starts cold. Whether a cold-started shard's particle filter actually reconverges to the
 *same* trip/block match the continuously-run shard would have reached, by the end of whatever overlap
 is chosen, is unverified - not something to assume safe without checking.
+
+## 2026-08-26
+
+### The real cause of idle stripes under vehicle-sharding: a hash collision, not dilution
+
+The 08-21 "filter dilution" theory was wrong. Decompiling both hash paths: the shard filter hashes the
+concatenated string `agencyId + "_" + vehicleId`; stripe assignment (`Math.floorMod(vehicleId.hashCode(),
+94)`) sums `AgencyAndId`'s two separate hashes plus a constant `93`. Different formulas, correctly
+identified as such in the earlier "ruled out" note - but both add an *odd* constant (`93` there, the `'_'`
+separator's char code `95` here) to the same underlying per-character sum, and since Java's `31`-multiplier
+string hash preserves that sum's parity, the two hashes always agree on parity. `94` is even, so that
+parity *is* the stripe index's own parity: shard 0 got only even-numbered stripes, shard 1 only odd -
+confirmed empirically, not just algebraically. Fixed by running the shard hash through MurmurHash3's
+32-bit finalizer before reducing by shard count (`ReplayFileInputTask.java`, `mix()`), which has full
+avalanche and can't share a structural correlation like that with an unrelated hash.
+
+Re-ran the same window post-fix: busy stripes per shard rose from ~40/94 to ~72-74/94, combined
+throughput from ~1.55x to ~1.97x versus the single-JVM baseline - above the ~1.8-1.9x originally hoped
+for. `maxOutstanding` was never the lever; this was.
+
+### `merge-shard-output.py`: fixing wrong-bucket output and merging shards, in one step
+
+`S3OutputQueueSenderServiceImpl` rolls parts by whichever bucket is open when a record finishes
+computing, not by that record's own `recordTimestamp` - confirmed on real data (a nominally-`08:30` part
+held records back to `08:15:27`). A new coordinator process re-derives every record's true bucket and is
+the only thing that uploads for a sharded run; each shard now runs with no self-upload
+(`run-replay.sh` skips its own uploader whenever `--shard` is given).
+
+Design: reads each shard's local spool directly (no S3 round-trip), writes every record into a fragment
+file keyed by `(shard, source file)` - always a full overwrite, never an append, so a retry after a
+partial failure anywhere rewrites the same bytes instead of duplicating them. A bucket closes once every
+shard's high-water mark has passed two roll-windows beyond it (one file's worth of guaranteed reach,
+which in filename terms looks like two because a file named `M` only ever contains content up to `M`,
+never reaching it - the roll condition writes the record that exceeds a window into the *next* file, not
+the current one).
+
+Not yet investigated: on a real 9-day sharded run, the two shards developed a persistent ~4-5% speed
+differential that compounded into an 8+ hour gap in virtual-time position after ~17.5 hours of wall time.
+Not a bug in the merge script (`frontier = min(...)` correctly stayed gated by the slower shard, which is
+why fragment counts climbed over the run rather than staying flat) - but worth knowing before assuming
+two shards track each other closely over a multi-day run. Drives real, if currently harmless, scratch
+disk growth: 2.3GB / 74 open buckets on one run, against 94GB free.
