@@ -159,6 +159,32 @@ public class VehicleLocationInferenceServiceImpl implements
    */
   private ThreadPoolExecutor[] _stripes;
 
+  /**
+   * Experimental alternative to _stripes, opt-in via -Doba.inference.sharedPool=true (default:
+   * unchanged stripe behaviour above). One N-thread pool instead of N one-thread pools, so a
+   * vehicle whose fixed stripe would otherwise sit idle no longer strands that thread's share of
+   * the CPU - any pool thread can pick up any vehicle with pending work. Ordering is preserved
+   * the same way a mailbox/actor system does it, not by a dedicated thread: each vehicle gets its
+   * own FIFO queue (VehicleMailbox), and _scheduled's compare-and-set guarantees at most one pool
+   * thread ever drains a given vehicle's queue at a time. See local-loop/replay/WORKLOG.md,
+   * 2026-08-26, for why this was tried - idle stripes under --shard turned out to be a genuine
+   * partitioning cost, not just a filter-dilution one.
+   */
+  private static final class VehicleMailbox {
+    private final ConcurrentLinkedQueue<Runnable> _queue = new ConcurrentLinkedQueue<Runnable>();
+    private final java.util.concurrent.atomic.AtomicBoolean _scheduled =
+        new java.util.concurrent.atomic.AtomicBoolean(false);
+  }
+
+  private boolean _useSharedPool = false;
+  private ThreadPoolExecutor _sharedPool;
+  private final ConcurrentMap<AgencyAndId, VehicleMailbox> _mailboxes =
+      new ConcurrentHashMap<AgencyAndId, VehicleMailbox>();
+  private final java.util.concurrent.atomic.AtomicInteger _sharedPoolOutstanding =
+      new java.util.concurrent.atomic.AtomicInteger();
+  private final java.util.concurrent.atomic.AtomicLong _sharedPoolCompleted =
+      new java.util.concurrent.atomic.AtomicLong();
+
   private int _skippedUpdateLogCounter = 0;
 
   // Load-shedding of stale queued fixes (default off; enabled via -Doba.shed.maxAgeSec).
@@ -232,13 +258,20 @@ public class VehicleLocationInferenceServiceImpl implements
       throw new IllegalArgumentException(
           "numberOfProcessingThreads must be positive");
 
-    _log.info("Creating " + _numberOfProcessingThreads
-        + " single-thread stripes (one thread each; vehicles are hashed onto a stripe)");
-    // newFixedThreadPool(1), not newSingleThreadExecutor(): only the former returns a real
-    // ThreadPoolExecutor, and the throughput log below needs getActiveCount/getCompletedTaskCount.
-    _stripes = new ThreadPoolExecutor[_numberOfProcessingThreads];
-    for (int i = 0; i < _stripes.length; i++)
-      _stripes[i] = (ThreadPoolExecutor) Executors.newFixedThreadPool(1);
+    _useSharedPool = Boolean.getBoolean("oba.inference.sharedPool");
+    if (_useSharedPool) {
+      _log.info("Creating a single " + _numberOfProcessingThreads + "-thread shared pool "
+          + "(vehicles dispatch by mailbox, not a fixed stripe) (oba.inference.sharedPool=true)");
+      _sharedPool = (ThreadPoolExecutor) Executors.newFixedThreadPool(_numberOfProcessingThreads);
+    } else {
+      _log.info("Creating " + _numberOfProcessingThreads
+          + " single-thread stripes (one thread each; vehicles are hashed onto a stripe)");
+      // newFixedThreadPool(1), not newSingleThreadExecutor(): only the former returns a real
+      // ThreadPoolExecutor, and the throughput log below needs getActiveCount/getCompletedTaskCount.
+      _stripes = new ThreadPoolExecutor[_numberOfProcessingThreads];
+      for (int i = 0; i < _stripes.length; i++)
+        _stripes[i] = (ThreadPoolExecutor) Executors.newFixedThreadPool(1);
+    }
 
     // Reproducibility needs a seed before the first record; setSeeds() is only reachable over HTTP.
     // Zero keeps the historical behaviour: an arbitrary seed, not reproducible.
@@ -266,19 +299,79 @@ public class VehicleLocationInferenceServiceImpl implements
     if (_stripes != null)
       for (ThreadPoolExecutor stripe : _stripes)
         stripe.shutdownNow();
+    if (_sharedPool != null)
+      _sharedPool.shutdownNow();
   }
 
   /**
    * Route a record to the stripe that owns its vehicle, so that vehicle's records run in submission
-   * order. See the _stripes field comment for why a shared pool cannot guarantee that.
+   * order. See the _stripes field comment for why a shared pool cannot guarantee that - unless it
+   * does its own per-vehicle serialisation, which is what submitToSharedPool does instead.
    */
   private Future<?> submitForVehicle(AgencyAndId vehicleId, ProcessingTask task) {
+    if (_useSharedPool)
+      return submitToSharedPool(vehicleId, task);
     int stripe = Math.floorMod(vehicleId.hashCode(), _stripes.length);
     return _stripes[stripe].submit(task);
   }
 
+  /**
+   * FutureTask both runs the task and tracks its own completion/cancellation state, so the
+   * returned Future is real - registerInferenceProcessingThread's isDone()/isCancelled() checks
+   * work the same as they do for a stripe's own submit(). drainMailbox is what actually calls
+   * run() on it, on whichever shared-pool thread picks up this vehicle's mailbox.
+   */
+  private Future<?> submitToSharedPool(AgencyAndId vehicleId, ProcessingTask task) {
+    final FutureTask<Void> future = new FutureTask<Void>(task, null);
+    VehicleMailbox mailbox = _mailboxes.get(vehicleId);
+    if (mailbox == null) {
+      final VehicleMailbox created = new VehicleMailbox();
+      final VehicleMailbox existing = _mailboxes.putIfAbsent(vehicleId, created);
+      mailbox = existing != null ? existing : created;
+    }
+    mailbox._queue.add(future);
+    _sharedPoolOutstanding.incrementAndGet();
+    scheduleMailboxIfNeeded(mailbox);
+    return future;
+  }
+
+  /** At most one pool thread drains a given mailbox at a time - see the VehicleMailbox comment. */
+  private void scheduleMailboxIfNeeded(final VehicleMailbox mailbox) {
+    if (mailbox._scheduled.compareAndSet(false, true)) {
+      _sharedPool.execute(new Runnable() {
+        @Override
+        public void run() {
+          drainMailbox(mailbox);
+        }
+      });
+    }
+  }
+
+  private void drainMailbox(VehicleMailbox mailbox) {
+    while (true) {
+      final Runnable task = mailbox._queue.poll();
+      if (task == null) {
+        mailbox._scheduled.set(false);
+        // A submitter can have lost the compare-and-set race above between our poll() and our
+        // set(false) - if their item is sitting there and nobody has re-claimed the mailbox yet,
+        // we do it ourselves rather than leaving it stranded until some later, unrelated submit.
+        if (mailbox._queue.peek() != null && mailbox._scheduled.compareAndSet(false, true))
+          continue;
+        return;
+      }
+      try {
+        task.run();
+      } finally {
+        _sharedPoolOutstanding.decrementAndGet();
+        _sharedPoolCompleted.incrementAndGet();
+      }
+    }
+  }
+
   /** Fleet-wide totals across the stripes, for the throughput log in ProcessingTask.run(). */
   public long stripesCompletedTaskCount() {
+    if (_useSharedPool)
+      return _sharedPoolCompleted.get();
     long n = 0;
     for (ThreadPoolExecutor stripe : _stripes)
       n += stripe.getCompletedTaskCount();
@@ -286,6 +379,8 @@ public class VehicleLocationInferenceServiceImpl implements
   }
 
   public int stripesActiveCount() {
+    if (_useSharedPool)
+      return _sharedPool.getActiveCount();
     int n = 0;
     for (ThreadPoolExecutor stripe : _stripes)
       n += stripe.getActiveCount();
@@ -299,6 +394,8 @@ public class VehicleLocationInferenceServiceImpl implements
 
   /** Tasks queued but not started, plus tasks running, across every stripe. */
   public int getOutstandingTaskCount() {
+    if (_useSharedPool)
+      return _sharedPoolOutstanding.get();
     if (_stripes == null)
       return 0;
     int n = 0;
@@ -938,7 +1035,7 @@ public class VehicleLocationInferenceServiceImpl implements
     		stop = System.currentTimeMillis();
           _timeSpentByVehicleId.put(_vehicleId, (stop - start));
 
-            if (_stripes != null && stripesCompletedTaskCount() % 1000 == 0) {
+            if ((_stripes != null || _useSharedPool) && stripesCompletedTaskCount() % 1000 == 0) {
               _log.warn("processing " + stripesActiveCount()
                       + " of " +  _numberOfProcessingThreads
                       + " with " + _vehicleInstancesByVehicleId.size()
