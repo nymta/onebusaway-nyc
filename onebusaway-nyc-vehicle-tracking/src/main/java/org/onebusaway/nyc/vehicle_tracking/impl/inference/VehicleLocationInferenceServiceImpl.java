@@ -155,20 +155,17 @@ public class VehicleLocationInferenceServiceImpl implements
    * vehicles still run concurrently. Only the race within a vehicle goes away. A single-thread
    * executor is FIFO, so submission order is execution order, and the stripe for a vehicle is the
    * same on every run because AgencyAndId.hashCode() derives from its strings - which the
-   * reproducibility requirement depends on.
+   * reproducibility requirement depends on. VehicleMailbox below is the default; it closes this
+   * same ordering gap without a fixed stripe.
    */
   private ThreadPoolExecutor[] _stripes;
 
   /**
-   * Experimental alternative to _stripes, opt-in via -Doba.inference.sharedPool=true (default:
-   * unchanged stripe behaviour above). One N-thread pool instead of N one-thread pools, so a
-   * vehicle whose fixed stripe would otherwise sit idle no longer strands that thread's share of
-   * the CPU - any pool thread can pick up any vehicle with pending work. Ordering is preserved
-   * the same way a mailbox/actor system does it, not by a dedicated thread: each vehicle gets its
-   * own FIFO queue (VehicleMailbox), and _scheduled's compare-and-set guarantees at most one pool
-   * thread ever drains a given vehicle's queue at a time. See local-loop/replay/WORKLOG.md,
-   * 2026-08-26, for why this was tried - idle stripes under --shard turned out to be a genuine
-   * partitioning cost, not just a filter-dilution one.
+   * Default vehicle dispatch (opt out via -Doba.inference.sharedPool=false, see _stripes above).
+   * One shared N-thread pool instead of one thread per stripe, so an idle thread can pick up any
+   * vehicle's pending work instead of being stranded on its own stripe. Per-vehicle order is kept
+   * by giving each vehicle its own FIFO queue and letting _scheduled's compare-and-set guarantee
+   * at most one pool thread drains a given vehicle's queue at a time.
    */
   private static final class VehicleMailbox {
     private final ConcurrentLinkedQueue<Runnable> _queue = new ConcurrentLinkedQueue<Runnable>();
@@ -258,14 +255,17 @@ public class VehicleLocationInferenceServiceImpl implements
       throw new IllegalArgumentException(
           "numberOfProcessingThreads must be positive");
 
-    _useSharedPool = Boolean.getBoolean("oba.inference.sharedPool");
+    // -Doba.inference.sharedPool=false opts back into _stripes.
+    final String sharedPoolProp = System.getProperty("oba.inference.sharedPool");
+    _useSharedPool = sharedPoolProp == null || Boolean.parseBoolean(sharedPoolProp);
     if (_useSharedPool) {
       _log.info("Creating a single " + _numberOfProcessingThreads + "-thread shared pool "
-          + "(vehicles dispatch by mailbox, not a fixed stripe) (oba.inference.sharedPool=true)");
+          + "(vehicles dispatch by mailbox, not a fixed stripe)");
       _sharedPool = (ThreadPoolExecutor) Executors.newFixedThreadPool(_numberOfProcessingThreads);
     } else {
       _log.info("Creating " + _numberOfProcessingThreads
-          + " single-thread stripes (one thread each; vehicles are hashed onto a stripe)");
+          + " single-thread stripes (one thread each; vehicles are hashed onto a stripe) "
+          + "(oba.inference.sharedPool=false)");
       // newFixedThreadPool(1), not newSingleThreadExecutor(): only the former returns a real
       // ThreadPoolExecutor, and the throughput log below needs getActiveCount/getCompletedTaskCount.
       _stripes = new ThreadPoolExecutor[_numberOfProcessingThreads];

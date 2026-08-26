@@ -1,7 +1,8 @@
 # Replay determinism
 
 Replay's value depends on identical input producing identical output. That has been verified at small
-scale and disproven at production scale. Both results stand; this document explains each.
+scale; at production scale it's unverified, not disproven - the one comparison run wasn't seed-controlled,
+so it doesn't actually distinguish "working as intended" from "broken." This document explains both.
 
 ## What the engine does
 
@@ -48,29 +49,42 @@ by deleting all 36 substitutions and watching determinism hold.
 ## Not settled: production-scale determinism (real archive data, ~5,000 vehicles/hour)
 
 **2026-08-24: two independent JVM runs of the identical one-hour window diverged on ~17% of shared
-records.** `continuous` (`08:00-09:30`) and `early` (`08:00-09:00`, same box, same config —
-`maxOutstanding=2000`, 94 stripes, same code) were compared directly over their shared `[08:00,09:00)`
-region with `compare-replay-runs.py`: 172,194 of 995,992 shared records differed, and the first
-differing record for nearly every vehicle landed within the first ~10-15 minutes of the run — not at any
-boundary, since neither run involved sharding or stitching. This is the same desync signature described
-above (one early draw lands differently, then every later draw for that vehicle disagrees), but at a
-scale — full production hour, ~5,000 concurrent vehicles — that the 270-record/5-vehicle fixture never
-exercised. The specific trigger has not been found.
+records** - `continuous` (`08:00-09:30`) and `early` (`08:00-09:00`, same box, same config -
+`maxOutstanding=2000`, 94 stripes, same code), compared over their shared `[08:00,09:00)` region with
+`compare-replay-runs.py`: 172,194 of 995,992 shared records differed, first-differing-record for nearly
+every vehicle within the first ~10-15 minutes. **But neither run set `-Doba.inference.seed`** (confirmed:
+`run-replay.sh` never sets it itself, and the standard replay command doesn't add it as an extra arg), and
+`InferenceRng.java:90-95` makes seed `0` deliberately non-reproducible - `new Random()` /
+fresh `MRG32k3a()` per JVM start, independent of threading entirely. Two unseeded runs are *expected* to
+diverge from the first record onward regardless of any thread-interleaving bug, which is exactly the
+observed signature. The comparison wasn't seed-controlled, so it cannot distinguish that from the
+harder desync bug described above - **production-scale determinism is unverified, not disproven.**
 
-This means the production regime has not actually been verified deterministic, despite the small-scale
-result above. Given the investigation cost documented in the methodology note below, this was not
-chased further — a call made under time pressure, not a conclusion that it's unfindable. Whoever picks
-this up next should start from `continuous` vs. `early`'s divergence rather than re-deriving it: exact
-labels and how to reproduce the comparison are in [replay/WORKLOG.md](../replay/WORKLOG.md)'s 2026-08-24
-entries.
+The actual test: rerun the same window twice with the *same* explicit `-Doba.inference.seed=N` both
+times. If they still diverge, that proves the desync bug at scale; if they match, seed 0 was the whole
+explanation and multithreaded determinism holds. Not yet done - and the exact `continuous`/`early` repro
+details (commands, box) are not recoverable from this repo: this section originally cited a 2026-08-24
+`replay/WORKLOG.md` entry for them, but no such entry exists (checked directly). Whoever picks this up
+next starts from scratch on reproduction, with a same-seed comparison from the start.
 
-## Why this is slow to chase
+## Why this is hard to chase
 
-No test asserts determinism and no build step notices when it breaks — it's observable only by running
-the same input twice and comparing, so every hypothesis costs a build and two runs, and the symptom
-appears far from the cause. Two traps worth knowing about before spending time on it:
+The search space is every source of shared mutable state reachable from concurrent particle-filter code
+— not one bug, but however many independent ones happen to exist. The small-scale fix above needed four
+unrelated causes fixed before the fixture passed (a shared RNG, two missing `hashCode()`s, one static
+field); finding three of four and missing the fourth would have looked identical to finding none, since
+a single leftover shared-state leak desyncs the draw sequence for every vehicle it touches from that
+point on. None of this is visible by reading the code in isolation — a field looks safe until a second
+call site under concurrency gets added later, or an upstream library's collection turns out to iterate in
+address-derived order. Finding a case like that is empirical, not analytical: instrument, run under real
+concurrency, check whether the specific decision at the specific point diverges, repeat.
 
-- **A passing comparison doesn't prove the threads ran concurrently.** Once here, a lock placed around a
+On top of that, no test asserts determinism and no build step notices when it breaks — it's observable
+only by running the same input twice and comparing, so every hypothesis costs a build and two runs, and
+the symptom appears far from the cause (a draw a vehicle took in its first minute first shows up as a
+different trip match forty minutes later). Two traps worth knowing about:
+
+- **A passing comparison doesn't prove the threads ran concurrently.** For example, a lock that was placed around a
   network call (crew data over S3) rather than around the state it protected serialized all four
   "concurrent" stripes without anyone requesting that — the engine reported four threads and was not
   concurrent. Determinism comparisons passed repeatedly under this bug and were taken as evidence

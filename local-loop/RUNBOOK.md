@@ -279,8 +279,7 @@ Run-time switches (no file edits): `-P local-ie-testing,local-live-feed`, `-Die.
 | `mq/bridge.py` · `start-bridge.sh` · `stop-bridge.sh` | forward the RabbitMQ stream onto the ZMQ input queue |
 | `mq/viewer.py` · `view.sh` | map viewer at :8090 (positions + GTFS-RT predictions, GTFS stop/route names) |
 | `mq/mq_env.sh.example` · `mq/README.md` | connection-detail template (copy to git-ignored `mq_env.sh`) + mq docs |
-| `REPLAY.md` | worklog of the changes that make replay work, and how to run one |
-| `replay/` | `replay.sh`, fixture cutters, crew-snapshot prefetch/probe, `EXTERNAL-DEPENDENCIES.md` |
+| `replay/` | `replay.sh`, fixture cutters, crew-snapshot prefetch/probe, `EXTERNAL-DEPENDENCIES.md`, `REPLAY.md` (how to run one, local or EC2, sharded or not), `WORKLOG.md` (why, one entry per change) |
 | `determinism/` | two-run reproducibility test and its findings: `replay-determinism.sh`, `compare-replay-runs.py`, the two determinism docs |
 | `ec2/` | deployment scripts for the EC2 host (`EC2-DEPLOYMENT.md`) |
 | `RUNBOOK.md` | this file |

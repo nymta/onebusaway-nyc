@@ -149,7 +149,8 @@ two bundle directories present, the hourly trigger would switch mid-run, drain i
 and then force-cancel them, and `verifyVehicleResultMappingToCurrentBundle:741-746` would reset vehicle
 state. `replay-determinism.sh` asserts exactly one bundle, which is the only guard.
 
-Under replay both tasks are now gated off (`ReplayDomain.BUNDLE`, see `../REPLAY.md`). `standaloneMode`
+Under replay both tasks are now gated off (`ReplayDomain.BUNDLE`, see `WORKLOG.md`'s scheduled/periodic
+task audit). `standaloneMode`
 also means discovery scans the local directory rather than calling the TDM.
 
 ## 8. TDM configuration service — resolved: the engine never reaches the TDM

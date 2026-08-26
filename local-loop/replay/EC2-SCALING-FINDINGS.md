@@ -1,7 +1,7 @@
 # EC2 replay scaling findings (2026-08-17 to 2026-08-18)
 
 Investigation of replay throughput on `oba-nyc-replay` (`i-09cab5faf0f4ba4d6`, c7i.12xlarge, 48 vCPU /
-24 physical cores). Builds on [REPLAY.md](REPLAY.md)'s M4 laptop baseline and
+24 physical cores). Builds on [WORKLOG.md](WORKLOG.md)'s M4 laptop baseline (2026-08-18 entry) and
 [HANDOFF.md](HANDOFF.md)'s open items. All full-fleet numbers use the `08-45` slot, unfiltered; all
 Manhattan numbers use `-Dreplay.routeFilter='^M[0-9]'`.
 
@@ -30,12 +30,12 @@ Three independent measurements agree, on the unfiltered full-fleet run, 46 strip
    where a few cores are pegged and the rest go unused.
 2. **Per-thread snapshot** (`top -H`): roughly 43 of the 46 stripe threads (`pool-N-thread-1`) captured
    simultaneously at 73-91% CPU each, system-wide `%Cpu(s)` at 89.1% user / 10.9% idle.
-3. **GC overhead is small**: 13.1s of GC pause out of a 178.3s run (7.4% of wall), matching REPLAY.md's
-   prior M4 laptop finding of "GC ≤ 10% of wall" (`REPLAY.md:160`). Confirms the cost is compute, not
-   allocation or collection.
+3. **GC overhead is small**: 13.1s of GC pause out of a 178.3s run (7.4% of wall), matching WORKLOG.md's
+   prior M4 laptop finding of "GC ≤ 10% of wall" (2026-08-18 Benchmarks entry). Confirms the cost is
+   compute, not allocation or collection.
 
-This matches REPLAY.md's own thread-dump profile from the M4 laptop: "CPU-bound: thread dumps show zero
-monitor contention, `FastMath.log` + `FoldedNormalDist`/`StudentT` dominate" (`REPLAY.md:159-160`).
+This matches WORKLOG.md's own thread-dump profile from the M4 laptop: "CPU-bound: thread dumps show zero
+monitor contention, `FastMath.log` + `FoldedNormalDist`/`StudentT` dominate" (2026-08-18 Benchmarks entry).
 
 ## Particle count scales throughput roughly linearly
 
@@ -135,29 +135,27 @@ unconfirmed single-socket assumption from the section above.
 remaining gap tracks the fleet-size difference (5,800 vs. this doc's 4,939 measured vehicles), not a
 throughput disagreement.*
 
-## Multithreaded determinism: root cause found and fixed
+## Preliminary: shared-pool dispatch vs. fixed stripes (2026-08-26)
 
-HANDOFF.md listed multithreaded determinism as unsolved; only single-threaded reproducibility had been
-verified (`compare-replay-runs.py`: 270/270 records, 0 differing fields, per REPLAY.md's Verified table).
+`VehicleLocationInferenceServiceImpl`'s vehicle dispatch defaults to a shared N-thread pool now (any
+thread can pick up any vehicle's pending work) instead of one fixed single-thread stripe per vehicle -
+opt out with `-Doba.inference.sharedPool=false`. Motivated by the idle-stripe cost found in the sharding
+investigation above, but the same imbalance exists on a plain non-sharded run too, just as a smaller,
+structural cost (uneven per-stripe vehicle load) rather than a whole shard's stripes sitting idle.
 
-**Root cause**: `ScheduleLikelihood.java` declared `POS_SCHED_DEV_CUTOFF` as a mutable `private static
-double` field on a Spring singleton (`@Component`). Every particle-filter evaluation wrote this shared
-field from its own vehicle's trip data (`ScheduleLikelihood.java:91-99`, pre-fix), then read it back a
-few lines later (`getScheduleDevLogProb`, pre-fix lines 158/177) to compute a probability. With 46
-concurrent single-thread stripes all calling this on the same singleton, one stripe's read could see a
-value another stripe had just written for a different vehicle: a genuine cross-thread data race, not
-just cache contention. This would silently corrupt some fraction of particle weights depending on
-scheduling luck, exactly the kind of bug that produces non-deterministic multithreaded output.
+Same-window (2026-08-10 08:00-08:55), non-sharded, unseeded comparison against `_stripes`: record counts
+and the input's own timestamp-skew warning counts matched exactly (dispatch order held), and:
 
-**Fix** (commit `618576d79`): removed the static field. The cutoff is now a local variable in
-`computeSchedTimeProb`, threaded through as a parameter to `getScheduleDevLogProb`. No behavior change
-to the intended per-vehicle logic, only removes the cross-thread contamination. Same commit also added
-the `-Doba.particle.count` override used above.
+| | `_stripes` | shared pool |
+|---|---|---|
+| total wall time | 1323.7s | 1119.2s |
+| speed multiplier | 2.7x | 3.2x |
+| inferred rec/s | 761 | 900 |
+| drain phase | 123.1s | 2.3s |
 
-**Verification**: re-ran `local-loop/determinism/replay-determinism.sh` locally with
-`OBA_INFERENCE_THREADS` set above 1 (exercising real cross-stripe concurrency on the fixture's 5
-vehicles) against the fixed code. The two runs' outputs now match. Multithreaded replay is deterministic
-with this fix in place.
+~15% faster, almost entirely from the collapsed drain phase. Preliminary: only tested non-sharded so
+far; a sharded run to confirm the larger-magnitude fix (the case this was actually built for) is still
+open. Full detail: [WORKLOG.md](WORKLOG.md), 2026-08-26.
 
 ## Open items / what to check next
 
@@ -169,3 +167,4 @@ with this fix in place.
   correctness-sensitive benchmark.
 - `FastMath` (commons-math 2.2) vs plain `Math` on JDK11 is a real candidate for further speedup but
   needs a microbenchmark, not just a swap (see the earlier code-review findings).
+- Sharded run to confirm the shared-pool dispatch fix at the magnitude it was built for (see above).

@@ -73,7 +73,7 @@ Five domains (`ReplayDomain.java`), with what is actually tagged under each:
 
 **`-Doba.replay.tasks` is never set in `run-replay.sh`.** `GatedTaskScheduler` defaults that to an
 empty domain set, so today every `@Replayable` task is unconditionally dropped, regardless of domain.
-This matches REPLAY.md's own tested claim that gating is inert with all domains blocked. The
+This matches the Verified table below ("Gating is inert with respect to inference"). The
 five-domain taxonomy is currently unused in practice; nothing is being selectively re-enabled.
 
 **The 30-minute crew-refresh task** (`S3UtsOperatorAssignmentServiceImpl`'s `CrewRefreshTask`,
@@ -95,6 +95,29 @@ already true in production; replay inherits them rather than introducing new stu
 **Conclusion**: no wall-clock task escapes the gate, and no gated task is being dropped when it
 should instead run against virtual time. The crew solution (a stateless lookup keyed on the virtual
 clock) is a better pattern than rescheduling against virtual time would have been, not a gap.
+
+### Benchmarks (M4 laptop, 10 cores, 12 threads, full fleet 08-45 slot)
+
+Steady-state ~200-250 ms/record after warm-up (early samples of 45-120 ms are warm-up, not attainable
+rate); ~73-97 rec/s ≈ 0.25x real time on 86k accepted records. CPU-bound: thread dumps show zero monitor
+contention, `FastMath.log` + `FoldedNormalDist`/`StudentT` dominate; GC ≤ 10% of wall with the throttle
+(live set is the transit graph, ~4.5 GB; allocation churn is young-gen and cheap). Production
+`c7i.12xlarge` ≈ 5x this box's effective FP throughput. `particle.filter.debug=true` (the old
+`local-ie-testing` default) retains every particle's ancestry and made per-record time climb without
+bound - now off by default.
+
+### Verified
+
+| Claim | Evidence |
+| --- | --- |
+| Single-threaded replay is reproducible | `compare-replay-runs.py`: 270/270 records, 0 differing fields |
+| Crew lookups match real operators | 210/270 records carry `managementRecord.assignedRunId`, 4 distinct runs |
+| The 60 non-matching records are correct | That operator is rostered `ROUTE=MISC RUN=116`; `isValidRunId` rejects it (`VehicleInferenceInstance:613`) |
+| Gating is inert with respect to inference | Output unchanged with all domains blocked |
+| Production behaviour is untouched | `S3UtsOperatorAssignmentServiceImplTest` passes; `taskScheduler` and `obaClock` both profile-scoped |
+| S3 input matches the local file | Streamed `08-45` slot: `read=266112 wrapped=266112`, same as the local copy |
+| Output format matches the observer's | Spooled parts parse with the same per-vehicle analysis scripts |
+| Upload path works end to end | A spooled part `aws s3 mv`'d to `ds-oba`, listed, removed |
 
 ## 2026-08-19
 
@@ -204,20 +227,19 @@ Combined throughput still landed short of the ~1.8-1.9x hoped for: ~1275-1400 re
 (24x baseline ~850-900), roughly 1.5-1.6x. Traced to stripe utilization, not compute speed: each shard
 only kept ~40 of its 94 stripes busy at once (down from ~64-76/94 for the single-JVM full-fleet run).
 
-Leading hypothesis: the reader's backlog stays pinned at `maxOutstanding=2000` almost continuously
-(`tasks pending` sits at ~2000 in every sample; the reader reports 84% throttled), which bounds how far
-ahead in virtual time it can ever get. Within that fixed, narrow window, the vehicle-shard filter
-discards half of every distinct vehicle before dispatch - so for the same window width, a shard sees
-roughly half as many distinct vehicles as the single-JVM run did, which halves how many stripes can
-ever be simultaneously busy. Matches the observed magnitude (~70 -> ~40). Checked and ruled out a
-sharper alternative: correlated hashing between the shard filter and stripe assignment, which would
-deterministically starve half the stripes given `_stripes.length=94` is even. Decompiled
-`AgencyAndId.hashCode()` (`93 + agencyId.hashCode() + id.hashCode()`) against the filter's
-`String`-concatenation hash and confirmed they're different formulas, not the same value reduced two
-ways. Other candidates not yet checked: uneven hash distribution across 94 stripes for ~2500 vehicles,
-rejected records (`rejected=358,705` vs `dispatched=168,061` in one run) concentrating on fewer
-vehicles than raw volume suggests, and the "processing X of 94" log line only sampling once every 1000
-global completions (a possible bias if completions come in bursts).
+**Superseded by the 2026-08-26 entry below - this was wrong, kept for the record.** Leading hypothesis at
+the time: the reader's backlog stays pinned at `maxOutstanding=2000` almost continuously (`tasks pending`
+sits at ~2000 in every sample; the reader reports 84% throttled), which bounds how far ahead in virtual
+time it can ever get. Within that fixed, narrow window, the vehicle-shard filter discards half of every
+distinct vehicle before dispatch - so for the same window width, a shard sees roughly half as many
+distinct vehicles as the single-JVM run did, which halves how many stripes can ever be simultaneously
+busy. Matches the observed magnitude (~70 -> ~40). Checked and ruled out a sharper alternative: correlated
+hashing between the shard filter and stripe assignment, which would deterministically starve half the
+stripes given `_stripes.length=94` is even. Decompiled `AgencyAndId.hashCode()` (`93 + agencyId.hashCode()
++ id.hashCode()`) against the filter's `String`-concatenation hash and confirmed they're different
+formulas, not the same value reduced two ways - correctly, but incompletely: same-parity correlation
+without being the same formula is exactly what the 2026-08-26 entry found. `maxOutstanding`/filter-dilution
+was never the actual cause.
 
 (Also reconfirmed: comparing this run's own `speed` field against the 24x box's actual 30.5-hour
 full-week average is the same non-comparison as before - short-run drain/warm-up dilution versus a
@@ -319,3 +341,30 @@ Not a bug in the merge script (`frontier = min(...)` correctly stayed gated by t
 why fragment counts climbed over the run rather than staying flat) - but worth knowing before assuming
 two shards track each other closely over a multi-day run. Drives real, if currently harmless, scratch
 disk growth: 2.3GB / 74 open buckets on one run, against 94GB free.
+
+### Shared thread pool for vehicle dispatch, now the default
+
+`_stripes` (one single-thread `ThreadPoolExecutor` per hash bucket) has a load-imbalance cost even
+without sharding: once the input reader finishes, some stripes still have backlog while others already
+sit idle, so the run's tail waits on whichever stripe drew the heaviest vehicles. `VehicleMailbox`
+replaces the fixed hash assignment with one shared N-thread pool: each vehicle gets its own FIFO queue,
+an `AtomicBoolean` CAS ensures at most one pool thread drains a given vehicle's queue at a time, so
+ordering is preserved by the mailbox rather than by owning a dedicated thread - any idle pool thread can
+pick up any vehicle with pending work instead of stranding its share of the CPU.
+
+Verified on a same-window (2026-08-10 08:00-08:55), non-sharded, unseeded replay against the `_stripes`
+baseline: record counts (`read`/`dispatched`/`rejected`/`outOfOrder`) and the input's own timestamp-skew
+warning counts (2977 total / 1690 >1hr) matched exactly, so dispatch order held. Throughput:
+
+| | `_stripes` | shared pool |
+|---|---|---|
+| total wall time | 1323.7s | 1119.2s |
+| speed multiplier | 2.7x | 3.2x |
+| inferred rec/s | 761 | 900 |
+| drain phase (post-read straggler wait) | 123.1s | 2.3s |
+
+~15% faster wall-clock, almost entirely from the collapsed drain phase - direct evidence of the same
+idle-thread waste the sharding hash-parity bug caused, just at a smaller, structural scale (uneven
+per-stripe vehicle load) rather than a whole shard's stripes going idle for the entire run. Made default
+(`-Doba.inference.sharedPool=false` to opt back into `_stripes`) on that basis; a sharded run to confirm
+the larger-magnitude fix is still worth doing but not treated as a blocker.
