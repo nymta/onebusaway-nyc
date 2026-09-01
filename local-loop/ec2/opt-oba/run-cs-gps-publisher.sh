@@ -9,7 +9,7 @@ export OBA_CSPUB_ZMQ_PORT="${OBA_CSPUB_ZMQ_PORT:-5564}"
 export OBA_CSPUB_ZMQ_TOPIC="${OBA_CSPUB_ZMQ_TOPIC:-bhs_queue}"
 export OBA_CSPUB_EXCHANGE="${OBA_CSPUB_EXCHANGE:-nyct.bustech.gps-filtered}"
 
-# Same CloudAMQP cluster the arms already consume from, so the transport config is shared.
+# Same CloudAMQP cluster the instances already consume from, so the transport config is shared.
 export OBA_CSPUB_RMQ_ADDRESSES="${OBA_CSPUB_RMQ_ADDRESSES:-$(gp /oba/rabbitmq/addresses)}"
 export OBA_CSPUB_RMQ_VHOST="${OBA_CSPUB_RMQ_VHOST:-$(gp /oba/rabbitmq/virtualHost)}"
 export OBA_CSPUB_RMQ_SSL="${OBA_CSPUB_RMQ_SSL:-$(gp /oba/rabbitmq/ssl)}"

@@ -81,7 +81,7 @@ All app ports (8081/8082/8083, broker 5566/5567, predictions-time 5568, Mongo 27
 ## 5. Infrastructure inventory (AWS acct 032610139471, us-east-1)
 
 - **EC2:** `i-0386b6bb8338b2f67` (`oba-nyc-prod`, **c7i.12xlarge** 48 vCPU/96 GB, Amazon Linux 2023). **EIP 52.70.255.34.** 30 GB gp3 root + **500 GB gp3** data volume at `/data` (Mongo + bundle; `DeleteOnTermination=false`).
-- **Data-volume durability (all arms):** every arm's 500 GB `/dev/sdf` → `/data` volume (Mongo + bundle) must be **`DeleteOnTermination=false`** — it holds the only copy of that arm's prediction history, and Mongo is never re-seeded. An instance launched from an **AMI clone inherits `true`**, which is silent: the arm runs fine and only loses the history if it is ever terminated. Found that way on `oba-nyc-fused-gps` (`i-0a45277b7b11ea8be`, built from the primary's AMI 2026-08-18) and corrected 2026-09-01; prod and `oba-nyc-filtered` were already `false`. The root `/dev/xvda` stays `true`. Check and fix:
+- **Data-volume durability (all instances):** every instance's 500 GB `/dev/sdf` → `/data` volume (Mongo + bundle) must be **`DeleteOnTermination=false`** — it holds the only copy of that instance's prediction history, and Mongo is never re-seeded. An instance launched from an **AMI clone inherits `true`**, which is silent: the instance runs fine and only loses the history if it is ever terminated. Found that way on `oba-nyc-fused-gps` (`i-0a45277b7b11ea8be`, built from the primary's AMI 2026-08-18) and corrected 2026-09-01; prod and `oba-nyc-filtered` were already `false`. The root `/dev/xvda` stays `true`. Check and fix:
   ```
   aws ec2 describe-instances --instance-ids <id> \
     --query 'Reservations[].Instances[].BlockDeviceMappings[].[DeviceName,Ebs.DeleteOnTermination]' --output text
@@ -107,11 +107,66 @@ Host `/opt/oba` (user `oba`): the two repo clones, wrapper scripts `run-{broker,
 - **Tune weights:** `deploy.sh set-weights S H R` (validates sum=100, updates the SSM param, live-POSTs) — no restart.
 - **Tune the deadband:** edit `-Doba.deadband.*` in `/opt/oba/run-inference.sh`, `systemctl restart oba-inference` (no rebuild). Widen `minMeters`→15 or `minIntervalSec`→7 to shed load; lower for finer cadence.
 - **Tune load-shedding:** edit `-Doba.shed.maxAgeSec` in `/opt/oba/run-inference.sh` + `systemctl restart oba-inference`. Lower (e.g. 30 s) → tighter freshness cap + more shedding; `0` disables it.
-- **CS filtered-AVL publisher:** `oba-cs-gps-publisher` runs `cs-gps-publisher.py`, a ZMQ `SUB` on `queue.staging.obanyc.com:5564` (topic `bhs_queue`) that republishes BusTech's **~28 s upstream-filtered** AVL **verbatim** to the RabbitMQ exchange/stream `nyct.bustech.gps-filtered` (`x-max-age=5m`), as `data-pusher`. It exists because that queue is source-IP allowlisted to **Elastic IPs only**, so ephemeral-IP arms cannot subscribe directly; prod fans it out over the broker instead. From there data-archiver's `bustechGpsFiltered` feed lands it in `s3://mtalirr/data-archiver/bustechGpsFiltered/`, which is what `run-replay.sh --prefix` reads. Opt-in per host via `OBA_CSPUB_ENABLED=1` in `/opt/oba/env-local.sh`. **Safe to restart on its own** — it feeds no OBA service on this host, the second exception to the full-chain rule above (but the 5-minute stream retention means a long outage is an unrecoverable gap). Details in [`local-loop/ec2/README.md`](ec2/README.md).
-- **Predictions S3 archiver:** `oba-predictions-archiver` runs `predictions-archiver.py`, a passive ZMQ `SUB` on `:5568` (topic `time`) that writes each differential `FeedMessage` as one JSON line, rotates on the UTC hour, and uploads `queuePredictions_YYYY-MM-DD_HH-00-00.zip` to `s3://oba-ec2-predictions/<prefix>/` — the dedicated bucket shared with D&A, byte-compatible with BusTech's `s3://obanyc-historical-predictions/`, so the two archives compare hour-for-hour. **One prefix per arm** (`v1/` primary, `v3-filtered/`, `v4-fused-gps/`; `v2-26s-deadband/` frozen — that host became the fused-gps arm), set as `OBA_ARCHIVER_S3_PREFIX` in that host's `/opt/oba/env-local.sh`; the hour key carries no host token, so an arm left on the default writes to the bucket root and arms sharing a prefix overwrite each other. Stop ids are re-prefixed to prod's single `MTA_` namespace (`OBA_ARCHIVER_STOP_ID_AGENCY`, default `MTA`), the only format difference between them. Optional SSM creds: `/oba/predictions/s3-archive/{access_key_id,secret_access_key}`. **Safe to restart on its own** — it touches no feed and appends to the partial hour rather than losing it, the one exception to the full-chain rule above. Details in [`local-loop/ec2/README.md`](ec2/README.md).
+- **CS filtered-AVL publisher:** `oba-cs-gps-publisher` runs `cs-gps-publisher.py`, a ZMQ `SUB` on `queue.staging.obanyc.com:5564` (topic `bhs_queue`) that republishes BusTech's **~28 s upstream-filtered** AVL **verbatim** to the RabbitMQ exchange/stream `nyct.bustech.gps-filtered` (`x-max-age=5m`), as `data-pusher`. It exists because that queue is source-IP allowlisted to **Elastic IPs only**, so ephemeral-IP instances cannot subscribe directly; prod fans it out over the broker instead. From there data-archiver's `bustechGpsFiltered` feed lands it in `s3://mtalirr/data-archiver/bustechGpsFiltered/`, which is what `run-replay.sh --prefix` reads. Opt-in per host via `OBA_CSPUB_ENABLED=1` in `/opt/oba/env-local.sh`. **Safe to restart on its own** — it feeds no OBA service on this host, the second exception to the full-chain rule above (but the 5-minute stream retention means a long outage is an unrecoverable gap). Details in [`local-loop/ec2/README.md`](ec2/README.md).
+- **Predictions S3 archiver:** `oba-predictions-archiver` runs `predictions-archiver.py`, a passive ZMQ `SUB` on `:5568` (topic `time`) that writes each differential `FeedMessage` as one JSON line, rotates on the UTC hour, and uploads `queuePredictions_YYYY-MM-DD_HH-00-00.zip` to `s3://oba-ec2-predictions/<prefix>/` — the dedicated bucket shared with D&A, byte-compatible with BusTech's `s3://obanyc-historical-predictions/`, so the two archives compare hour-for-hour. **One prefix per instance** (`v1/` primary, `v3-filtered/`, `v4-fused-gps/`; `v2-26s-deadband/` frozen — that host became the fused-gps instance), set as `OBA_ARCHIVER_S3_PREFIX` in that host's `/opt/oba/env-local.sh`; the hour key carries no host token, so an instance left on the default writes to the bucket root and instances sharing a prefix overwrite each other. Stop ids are re-prefixed to prod's single `MTA_` namespace (`OBA_ARCHIVER_STOP_ID_AGENCY`, default `MTA`), the only format difference between them. Optional SSM creds: `/oba/predictions/s3-archive/{access_key_id,secret_access_key}`. **Safe to restart on its own** — it touches no feed and appends to the partial hour rather than losing it, the one exception to the full-chain rule above. Details in [`local-loop/ec2/README.md`](ec2/README.md).
 - **Resize instance:** stop → `modify-instance-attribute --instance-type` → start (EBS + EIP persist, so the hostname is unchanged; ~2 min of feed outage). **Stop the OBA units and `docker stop oba-mongo` first** so Mongo closes cleanly — it holds the only copy of the prediction history. Heaps need not change (the workload is CPU-bound); size Mongo's WT cache to the new RAM.
 - **Refresh the bundle** (new pick): upload GTFS+STIF → S3, pull to `/data/bundle-src`, author `bundle-*.xml`, build with `FederatedTransitDataBundleCreatorMain`, move the new bundle into `/data/oba-bundle`, archive the old one, restart.
 - **Interactive admin:** `aws ssm start-session --target i-0386b6bb8338b2f67` (needs the session-manager-plugin locally) or scripted `aws ssm send-command`.
+
+---
+
+## 6b. The three instances, and deploying to one of them
+
+All three run the **identical tree** from `ds/ec2-deploy`. What makes them different is one
+untracked file per host, `/opt/oba/env-local.sh` — tracked copies and the drift check live in
+[`local-loop/ec2/env-local/`](ec2/env-local/).
+
+| instance | id | input stream | deadband | archive prefix | publisher | public :80 |
+|---|---|---|---|---|---|---|
+| `oba-nyc-prod` | `i-0386b6bb8338b2f67` | `nyct.bustech.gps` | 10 m / 7 s / 30 s | `v1/` | yes | yes (EIP 52.70.255.34) |
+| `oba-nyc-filtered` | `i-0d78f39b83d961f5c` | `nyct.bustech.gps-filtered` | **off** | `v3-filtered/` | no | no |
+| `oba-nyc-fused-gps` | `i-0a45277b7b11ea8be` | `nyct.bus.fused-gps` | 10 m / 7 s / 30 s | `v4-fused-gps/` | no | no |
+
+Dashboards are named after the instance; alarms use the `oba-` / `oba-filtered-` / `oba-fused-gps-`
+prefixes. `oba-nyc-fused-gps` was `oba-nyc-cadence30` (26 s deadband, prefix `v2-26s-deadband/`)
+until the 2026-09-01 cutover; that prefix keeps its history but takes no new uploads.
+
+### Deploy to a specific instance
+
+**The GitHub Action reaches `oba-nyc-prod` only.** Its target is the repo variable
+`vars.OBA_INSTANCE_ID` (`deploy.yml:54`) rather than a workflow input, and the deploy role
+`oba-nyc-gha-deploy` scopes `ssm:SendCommand` to that one instance ARN — pointing the variable
+elsewhere yields `AccessDenied`. `deploy.yml` is also absent from the repo default branch, so
+`workflow_dispatch` offers no Run button at all (see §11). Every instance deploy to date has gone
+through the CLI path below.
+
+```
+aws ssm send-command --instance-ids <instance-id> \
+  --document-name AWS-RunShellScript --timeout-seconds 3600 \
+  --parameters 'commands=["/opt/oba/deploy.sh deploy ds/ec2-deploy ds/ec2-deploy"]'
+```
+
+Both refs default to `ds/ec2-deploy` if omitted, but pass them explicitly — `deploy.sh` runs
+`git checkout`, so this is also how an instance is moved back onto the shared branch. The command
+rebuilds and restarts the full chain (~several minutes plus fleet re-convergence); poll it with
+`aws ssm get-command-invocation --command-id <id> --instance-id <id>`.
+
+**Mongo is untouched by a deploy** — only the five OBA units restart, never the `oba-mongo`
+container. To make the Action work for every instance you need three things, none of which are
+done: `deploy.yml` on the default branch, the deploy role widened to all three instance ARNs, and
+an `instance` input plus per-instance `concurrency` in place of the global `oba-prod-deploy` lock.
+
+### After any deploy or config change, verify against the process
+
+The file being right proves nothing (see the `env-common.sh` trap in
+[`ec2/env-local/README.md`](ec2/env-local/README.md)):
+
+```
+ps -ef | grep -o 'oba.rmq.streamName=[^ ]*'
+ps -ef | grep -o 'oba.deadband[^ ]*'
+P=$(systemctl show oba-predictions-archiver -p MainPID --value)
+sudo tr '\0' '\n' < /proc/$P/environ | grep OBA_ARCHIVER_S3_PREFIX
+```
 
 ---
 
@@ -139,7 +194,7 @@ Host `/opt/oba` (user `oba`): the two repo clones, wrapper scripts `run-{broker,
 | `InferenceShedFixes` | stale fixes dropped per ~2-min interval (load-shed volume; §4.10) | > 10000 |
 | `CPUUtilization` (AWS/EC2, built-in) | instance CPU | > 90% for 15 min |
 
-- **7 alarms** (name prefix `oba-`) are defined but currently have **no notification action** — they only drive red/green status on the dashboard. Wiring email/Slack is a one-liner later: create an SNS topic and `aws cloudwatch put-metric-alarm --alarm-actions <topic-arn>`.
+- **15 alarms** (name prefix `oba-`) are defined but currently have **no notification action** — they only drive red/green status on the dashboard. Wiring email/Slack is a one-liner later: create an SNS topic and `aws cloudwatch put-metric-alarm --alarm-actions <topic-arn>`.
 - Signals used (there is no built-in `/health`): GTFS-RT `header.timestamp` (= last successful 10 s refresh), `systemctl is-active`, the mongo container state, and the inference WARN "outstanding threads not reaped" line via `journalctl`.
 
 > **Live observation (2026-07-21):** the dashboard first showed the 5 s-while-moving deadband **diverging at PM peak** (~4,840 vehicles: `InferenceBacklogThreads` 23.7k→24.2k, load ~28/32) — fits off-peak (~3,600) but not peak on 32 vCPU. **Load-shedding (§4.10) was then added to cap it:** at peak the queue drains stale fixes instead of growing unbounded, holding lag ≤ ~50 s and preventing OOM. Watch `InferenceShedFixes` (drop volume) alongside `InferenceBacklogThreads` at peak.

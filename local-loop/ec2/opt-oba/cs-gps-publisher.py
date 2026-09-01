@@ -5,14 +5,14 @@ Subscribes to the ZeroMQ PUB feed at queue.staging.obanyc.com:5564 (topic "bhs_q
 publishes each message body **verbatim** to a RabbitMQ exchange, so that:
 
   * a TDM-less OBA host can consume it with the stock RabbitMqInputQueueListenerTask -- only
-    inference-engine.rabbitmq.streamName changes, keeping the cadence arm one variable away
-    from the other arms; and
+    inference-engine.rabbitmq.streamName changes, keeping the cadence instance one variable away
+    from the other instances; and
   * data-archiver can archive it to s3://mtalirr/data-archiver/<feed>/ , which is what
     run-replay.sh reads (replay is fed from S3, never from a queue).
 
 Only hosts whose egress is an allowlisted Elastic IP can reach the source queue -- oba-nyc-prod
 (52.70.255.34) is one, ephemeral-IP hosts time out -- which is why this runs on prod and fans out
-over RabbitMQ rather than each arm subscribing directly.
+over RabbitMQ rather than each instance subscribing directly.
 
 The source is a ZMTP/1.0-era PUB socket, but libzmq 4.x negotiates with it natively (verified
 pyzmq 27.2 / libzmq 4.3.5 against this endpoint), so this is a plain zmq.SUB.

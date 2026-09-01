@@ -48,11 +48,11 @@ compared offline hour-for-hour.
 - **Hourly rotation:** on the first message of a new UTC hour, zip to
   `queuePredictions_YYYY-MM-DD_HH-00-00.zip` (prod's layout) and upload to
   `s3://oba-ec2-predictions/$OBA_ARCHIVER_S3_PREFIX/` — the dedicated bucket shared with D&A.
-  One prefix per arm: `v1/` (primary, ~11 s deadband), `v3-filtered/` (28 s input parity),
+  One prefix per instance: `v1/` (primary, ~11 s deadband), `v3-filtered/` (28 s input parity),
   `v4-fused-gps/` (v1's deadband on `nyct.bus.fused-gps`). `v2-26s-deadband/` is frozen — that
-  host became the fused-gps arm, so the prefix keeps its history but takes no new uploads.
-  The hour key carries no host token, so **every arm must set its own
-  `OBA_ARCHIVER_S3_PREFIX` in `/opt/oba/env-local.sh`** — two arms sharing a prefix silently
+  host became the fused-gps instance, so the prefix keeps its history but takes no new uploads.
+  The hour key carries no host token, so **every instance must set its own
+  `OBA_ARCHIVER_S3_PREFIX` in `/opt/oba/env-local.sh`** — two instances sharing a prefix silently
   overwrite each other's zips. Nothing writes to the bucket root as of 2026-08-21.
 - **stopId normalisation:** the stream emits per-agency stop ids (`MTA NYCT_401964`, `MTABC_501531`)
   where prod's archive uses one `MTA_<id>` namespace — the only format difference between the two.
@@ -96,7 +96,7 @@ Elastic IP can consume it. Deployed 2026-08-20 on `i-0386b6bb8338b2f67`.
 
 Not installed by `deploy.sh`, so each host keeps its own values across deploys; absent = stock
 behavior. Beyond the deadband/archiver-prefix/monitor keys: `OBA_CSPUB_ENABLED`,
-`OBA_DEADBAND_ENABLED` (set `false` on an arm fed the already-filtered queue, or the gate
+`OBA_DEADBAND_ENABLED` (set `false` on an instance fed the already-filtered queue, or the gate
 double-filters) and `OBA_RMQ_STREAM_NAME`.
 
 **It only works if `env-common.sh` sources it** — that line was added after the primary was

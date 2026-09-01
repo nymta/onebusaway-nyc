@@ -3,8 +3,8 @@
 
 The archives hold DIFFERENTIAL GTFS-RT: one trip-update message per ingested AVL fix per vehicle.
 So row and message counts scale with **publication cadence**, not with how much the model predicts.
-An arm fed a 28 s input emits ~half the rows of one fed a ~16 s input while predicting exactly the
-same things -- which is the confound the cadence-parity arm exists to remove (PLAN-cadence-parity.md).
+An instance fed a 28 s input emits ~half the rows of one fed a ~16 s input while predicting exactly the
+same things -- which is the confound the cadence-parity instance exists to remove (PLAN-cadence-parity.md).
 
 This counts distinct (tripId, stopId) pairs as "predictions", reports the republication factor that
 explains any row gap, and measures the per-vehicle publication interval on each side so the gap can
@@ -14,10 +14,10 @@ Usage:
   compare-distinct-predictions.py <YYYY-MM-DD_HH> [--a PREFIX] [--b PREFIX] [--bucket B]
                                   [--from-min M] [--to-min M] [--keep]
 
-  --a / --b   archive prefixes inside the bucket, one per arm: v1 (oba-nyc-prod, ~11 s deadband),
+  --a / --b   archive prefixes inside the bucket, one per instance: v1 (oba-nyc-prod, ~11 s deadband),
               v3-filtered (28 s input parity), v4-fused-gps (v1's deadband on
               nyct.bus.fused-gps). v2-26s-deadband is frozen -- that host became the fused-gps
-              arm. Defaults: a=v3-filtered (the 28 s arm), b=v1.
+              instance. Defaults: a=v3-filtered (the 28 s instance), b=v1.
               oba-nyc-prod archived to the bucket root until 2026-08-21; passing "" now finds
               nothing rather than erroring.
   --from-min / --to-min

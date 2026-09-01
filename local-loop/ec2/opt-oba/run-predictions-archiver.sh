@@ -9,9 +9,9 @@ export OBA_ARCHIVER_S3_BUCKET="${OBA_ARCHIVER_S3_BUCKET:-oba-ec2-predictions}"
 export OBA_ARCHIVER_S3_PREFIX="${OBA_ARCHIVER_S3_PREFIX-}"
 export OBA_ARCHIVER_UPLOAD="${OBA_ARCHIVER_UPLOAD:-true}"
 
-# One prefix per arm, and no arm writes to the bucket root since 2026-08-21. Refuse to start
+# One prefix per instance, and no instance writes to the bucket root since 2026-08-21. Refuse to start
 # without one rather than silently archiving to the root: the hour key carries no host token, so
-# an unprefixed arm is indistinguishable from -- and can overwrite -- another arm's zips. This
+# an unprefixed instance is indistinguishable from -- and can overwrite -- another instance's zips. This
 # fires when env-local.sh exists but never reached us (stale env-common.sh with no source line),
 # which is otherwise invisible because the fallthrough above yields a valid empty prefix.
 if [ "$OBA_ARCHIVER_UPLOAD" != "false" ] && [ -z "$OBA_ARCHIVER_S3_PREFIX" ] \
