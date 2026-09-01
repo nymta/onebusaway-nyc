@@ -14,8 +14,12 @@ Environment:
   OBA_ARCHIVER_ZMQ_PORT     default 5568
   OBA_ARCHIVER_ZMQ_TOPIC    default time
   OBA_ARCHIVER_DIR          default /data/predictions-archive
-  OBA_ARCHIVER_S3_BUCKET    default mtalirr
-  OBA_ARCHIVER_S3_PREFIX    default oba-ec2-predictions
+  OBA_ARCHIVER_S3_BUCKET    default oba-ec2-predictions (dedicated bucket, shared with D&A)
+  OBA_ARCHIVER_S3_PREFIX    no default -- one prefix per arm, set in /opt/oba/env-local.sh:
+                            v1 (oba-nyc-prod), v2-26s-deadband, v3-filtered. Nothing has written
+                            to the bucket root since 2026-08-21. The hour key carries no host
+                            token, so two arms sharing a prefix silently overwrite each other's
+                            zips; run-predictions-archiver.sh refuses to start without one.
   OBA_ARCHIVER_UPLOAD       default true (false = local files only)
   OBA_ARCHIVER_S3_RETRIES   default 3
   OBA_ARCHIVER_LOG_STATS_SEC  default 60
@@ -47,8 +51,8 @@ ZMQ_HOST = os.environ.get("OBA_ARCHIVER_ZMQ_HOST", "127.0.0.1")
 ZMQ_PORT = os.environ.get("OBA_ARCHIVER_ZMQ_PORT", "5568")
 ZMQ_TOPIC = os.environ.get("OBA_ARCHIVER_ZMQ_TOPIC", "time")
 ARCHIVE_DIR = Path(os.environ.get("OBA_ARCHIVER_DIR", "/data/predictions-archive"))
-S3_BUCKET = os.environ.get("OBA_ARCHIVER_S3_BUCKET", "mtalirr")
-S3_PREFIX = os.environ.get("OBA_ARCHIVER_S3_PREFIX", "oba-ec2-predictions").strip("/")
+S3_BUCKET = os.environ.get("OBA_ARCHIVER_S3_BUCKET", "oba-ec2-predictions")
+S3_PREFIX = os.environ.get("OBA_ARCHIVER_S3_PREFIX", "").strip("/")
 UPLOAD_ENABLED = os.environ.get("OBA_ARCHIVER_UPLOAD", "true").lower() not in ("0", "false", "no")
 S3_RETRIES = int(os.environ.get("OBA_ARCHIVER_S3_RETRIES", "3"))
 LOG_STATS_SEC = int(os.environ.get("OBA_ARCHIVER_LOG_STATS_SEC", "60"))

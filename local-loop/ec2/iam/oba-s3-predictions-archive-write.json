@@ -1,0 +1,45 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ListPredictionsArchiveBucket",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::oba-ec2-predictions"
+    },
+    {
+      "Sid": "WritePredictionsArchiveObjects",
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject",
+        "s3:AbortMultipartUpload"
+      ],
+      "Resource": "arn:aws:s3:::oba-ec2-predictions/*"
+    },
+    {
+      "Sid": "LegacyMtalirrPrefixDuringCutover",
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucket"
+      ],
+      "Resource": "arn:aws:s3:::mtalirr",
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": [
+            "oba-ec2-predictions",
+            "oba-ec2-predictions/*"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "LegacyMtalirrWriteDuringCutover",
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject",
+        "s3:AbortMultipartUpload"
+      ],
+      "Resource": "arn:aws:s3:::mtalirr/oba-ec2-predictions/*"
+    }
+  ]
+}
