@@ -16,7 +16,9 @@ Environment:
   OBA_ARCHIVER_DIR          default /data/predictions-archive
   OBA_ARCHIVER_S3_BUCKET    default oba-ec2-predictions (dedicated bucket, shared with D&A)
   OBA_ARCHIVER_S3_PREFIX    no default -- one prefix per arm, set in /opt/oba/env-local.sh:
-                            v1 (oba-nyc-prod), v2-26s-deadband, v3-filtered. Nothing has written
+                            v1 (oba-nyc-prod), v3-filtered, v4-fused-gps (oba-nyc-fused-gps).
+                            v2-26s-deadband is frozen: that host became the fused-gps arm, so the
+                            prefix keeps its history but takes no new uploads. Nothing has written
                             to the bucket root since 2026-08-21. The hour key carries no host
                             token, so two arms sharing a prefix silently overwrite each other's
                             zips; run-predictions-archiver.sh refuses to start without one.

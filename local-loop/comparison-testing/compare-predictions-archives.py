@@ -51,7 +51,8 @@ QUEUE_PREDICTIONS_RE = re.compile(
 )
 
 # Ours lives in a dedicated bucket (shared with D&A), one prefix per arm: v1 = the primary
-# (~11 s deadband), v2-26s-deadband, v3-filtered. Two earlier locations are dead and both fail
+# (~11 s deadband), v3-filtered, v4-fused-gps; v2-26s-deadband is frozen (that host became the
+# fused-gps arm). Two earlier locations are dead and both fail
 # by silently reporting "no archive found" rather than erroring, so check the prefix first:
 # s3://mtalirr/oba-ec2-predictions/ stopped receiving uploads 2026-08-10, and the primary
 # archived to this bucket's ROOT until 2026-08-21 (moved to v1/, root objects deleted).

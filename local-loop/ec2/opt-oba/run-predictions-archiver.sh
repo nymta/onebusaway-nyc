@@ -17,8 +17,9 @@ export OBA_ARCHIVER_UPLOAD="${OBA_ARCHIVER_UPLOAD:-true}"
 if [ "$OBA_ARCHIVER_UPLOAD" != "false" ] && [ -z "$OBA_ARCHIVER_S3_PREFIX" ] \
    && [ "${OBA_ARCHIVER_ALLOW_ROOT:-0}" != "1" ]; then
   echo "FATAL: OBA_ARCHIVER_S3_PREFIX is empty -- set it in /opt/oba/env-local.sh (v1 =" \
-       "oba-nyc-prod, v2-26s-deadband, v3-filtered) and confirm env-common.sh sources that" \
-       "file. Override with OBA_ARCHIVER_ALLOW_ROOT=1 only to deliberately write to the root." >&2
+       "oba-nyc-prod, v3-filtered, v4-fused-gps; v2-26s-deadband is frozen) and confirm" \
+       "env-common.sh sources that file. Override with OBA_ARCHIVER_ALLOW_ROOT=1 only to" \
+       "deliberately write to the root." >&2
   exit 1
 fi
 # Force prod's single-namespace stopId prefix (`MTA_<id>`) over the bundle's per-agency

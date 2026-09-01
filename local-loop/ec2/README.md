@@ -48,7 +48,9 @@ compared offline hour-for-hour.
 - **Hourly rotation:** on the first message of a new UTC hour, zip to
   `queuePredictions_YYYY-MM-DD_HH-00-00.zip` (prod's layout) and upload to
   `s3://oba-ec2-predictions/$OBA_ARCHIVER_S3_PREFIX/` — the dedicated bucket shared with D&A.
-  One prefix per arm: `v1/` (primary, ~11 s deadband), `v2-26s-deadband/`, `v3-filtered/`.
+  One prefix per arm: `v1/` (primary, ~11 s deadband), `v3-filtered/` (28 s input parity),
+  `v4-fused-gps/` (v1's deadband on `nyct.bus.fused-gps`). `v2-26s-deadband/` is frozen — that
+  host became the fused-gps arm, so the prefix keeps its history but takes no new uploads.
   The hour key carries no host token, so **every arm must set its own
   `OBA_ARCHIVER_S3_PREFIX` in `/opt/oba/env-local.sh`** — two arms sharing a prefix silently
   overwrite each other's zips. Nothing writes to the bucket root as of 2026-08-21.

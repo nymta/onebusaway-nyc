@@ -15,7 +15,9 @@ Usage:
                                   [--from-min M] [--to-min M] [--keep]
 
   --a / --b   archive prefixes inside the bucket, one per arm: v1 (oba-nyc-prod, ~11 s deadband),
-              v2-26s-deadband, v3-filtered. Defaults: a=v3-filtered (the 28 s arm), b=v1.
+              v3-filtered (28 s input parity), v4-fused-gps (v1's deadband on
+              nyct.bus.fused-gps). v2-26s-deadband is frozen -- that host became the fused-gps
+              arm. Defaults: a=v3-filtered (the 28 s arm), b=v1.
               oba-nyc-prod archived to the bucket root until 2026-08-21; passing "" now finds
               nothing rather than erroring.
   --from-min / --to-min
