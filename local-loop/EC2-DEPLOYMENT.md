@@ -81,6 +81,13 @@ All app ports (8081/8082/8083, broker 5566/5567, predictions-time 5568, Mongo 27
 ## 5. Infrastructure inventory (AWS acct 032610139471, us-east-1)
 
 - **EC2:** `i-0386b6bb8338b2f67` (`oba-nyc-prod`, **c7i.12xlarge** 48 vCPU/96 GB, Amazon Linux 2023). **EIP 52.70.255.34.** 30 GB gp3 root + **500 GB gp3** data volume at `/data` (Mongo + bundle; `DeleteOnTermination=false`).
+- **Data-volume durability (all arms):** every arm's 500 GB `/dev/sdf` → `/data` volume (Mongo + bundle) must be **`DeleteOnTermination=false`** — it holds the only copy of that arm's prediction history, and Mongo is never re-seeded. An instance launched from an **AMI clone inherits `true`**, which is silent: the arm runs fine and only loses the history if it is ever terminated. Found that way on `oba-nyc-fused-gps` (`i-0a45277b7b11ea8be`, built from the primary's AMI 2026-08-18) and corrected 2026-09-01; prod and `oba-nyc-filtered` were already `false`. The root `/dev/xvda` stays `true`. Check and fix:
+  ```
+  aws ec2 describe-instances --instance-ids <id> \
+    --query 'Reservations[].Instances[].BlockDeviceMappings[].[DeviceName,Ebs.DeleteOnTermination]' --output text
+  aws ec2 modify-instance-attribute --instance-id <id> \
+    --block-device-mappings '[{"DeviceName":"/dev/sdf","Ebs":{"DeleteOnTermination":false}}]'
+  ```
 - **Security group** `sg-0fca012b2afe2a1ee`: inbound **:80 from 0.0.0.0/0** only. Everything else closed.
 - **IAM:** instance profile `oba-nyc-ec2-profile` / role `oba-nyc-ec2-role` (SSM core + read `/oba/*` + write `/oba/predictions/weights` + read the S3 bundle bucket + write `s3://oba-ec2-predictions/*`, the dedicated bucket shared with D&A, and the legacy `s3://mtalirr/oba-ec2-predictions/*` — both via inline policy `oba-s3-predictions-archive-write`). Deploy role `oba-nyc-gha-deploy` (GitHub OIDC → `ssm:SendCommand` on this instance).
 - **SSM Parameter Store:** `/oba/rabbitmq/*` (feed creds — SecureString user/pass), `/oba/predictions/weights` = `20/40/40`, `/oba/uts/s3/{accessKey,secretKey}` (`digital-services` in `151844622248` — reads the UTS crew roster *and* the YardTrek pullout feed; passed to predictions as `CloudWatchKey/Secret`, which is what `AWSS3Helper` reads).
