@@ -81,6 +81,10 @@ Env var overrides, not flags: `OBA_PF_DEBUG`, `OBA_DEADBAND_ENABLED/_MIN_METERS/
 | `REPLAY_CREW_DIR` | Prefetched UTS snapshot dir (default `/data/uts-snapshots`); unset dir disables crew |
 | `REPLAY_THREADS` | Inference stripe/pool thread count (default: this box's vCPUs, minus 2, split across shards) |
 | `REPLAY_CLOUDWATCH` | `0` skips pushing `replay-monitor.log` to CloudWatch (default: on) |
+| `REPLAY_DEADBAND_MIN_METERS` | Ingestion deadband min movement to keep a fix (default `0`) |
+| `REPLAY_DEADBAND_MIN_INTERVAL_SEC` | Ingestion deadband min time between kept fixes (default `7`) |
+| `REPLAY_DEADBAND_MAX_AGE_SEC` | Ingestion deadband max time before a fix is kept regardless of movement (default `30`) |
+| `REPLAY_BUNDLE_ROOT` | Directory to use instead of `/data/oba-bundle` (default) - must hold exactly one bundle; also what `--shard` symlinks from into each shard's shadow dir |
 
 ### JVM properties (`-D`, extra args on any of the scripts above)
 

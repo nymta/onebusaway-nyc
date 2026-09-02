@@ -25,12 +25,24 @@
 #                     local-loop/replay/fetch-crew-snapshots.sh). Unset dir -> crew disabled.
 #   REPLAY_THREADS    inference stripes (default: vCPU count minus 2, for the reader and the JVM)
 #   REPLAY_CLOUDWATCH set to 0 to skip pushing replay-monitor.log to CloudWatch (default: on)
+#   REPLAY_DEADBAND_MIN_METERS     ingestion deadband min movement (default 0)
+#   REPLAY_DEADBAND_MIN_INTERVAL_SEC ingestion deadband min time between kept fixes (default 7)
+#   REPLAY_DEADBAND_MAX_AGE_SEC    ingestion deadband max time before a fix is kept regardless (default 30)
+#   REPLAY_BUNDLE_ROOT determines the bundle(s) this run sees, including - for --shard - which
+#                     bundle gets symlinked into each shard's shadow dir (default /data/oba-bundle,
+#                     from env-common.sh). Point it at a directory holding exactly one bundle to
+#                     use a different pick without touching /data/oba-bundle itself; standalone
+#                     discovery picks arbitrarily if it finds more than one applicable bundle, and
+#                     replay's own -Dorg.onebusaway.nyc.tdm.bundle.batchmode=true makes every
+#                     bundle present "applicable" regardless of date, so more than one here is
+#                     never safe, not just for overlapping date ranges.
 #
 # Chunks are fed through a FIFO in the order given (--prefix sorts keys, chronological for the
 # archive's naming), so multi-chunk windows replay as one continuous stream and nothing is staged
 # on disk. The instance profile provides S3 credentials for both directions.
 set -uo pipefail
 source /opt/oba/env-common.sh
+BUNDLE="${REPLAY_BUNDLE_ROOT:-$BUNDLE}"
 export MAVEN_OPTS="${REPLAY_MAVEN_OPTS:--Xmx30g} -Duser.timezone=America/New_York"
 
 # Leave 2 vCPUs free for the reader thread and JVM/OS overhead; never go below 1 stripe.
@@ -288,7 +300,10 @@ mvn -B -P local-ie-testing -DskipTests -Dlicense.skip=true \
   -Doba.bundleSwitchTracking.disabled=true \
   `# replay never switches bundles, so this bookkeeping (capped at MAX_EXPECTED_THREADS=3000) is skipped` \
   -Djetty.http.port="$JETTY_PORT" \
-  -Doba.deadband.enabled=true -Doba.deadband.minMeters=0 -Doba.deadband.minIntervalSec=7 -Doba.deadband.maxAgeSec=30 \
+  -Doba.deadband.enabled=true \
+  -Doba.deadband.minMeters="${REPLAY_DEADBAND_MIN_METERS:-0}" \
+  -Doba.deadband.minIntervalSec="${REPLAY_DEADBAND_MIN_INTERVAL_SEC:-7}" \
+  -Doba.deadband.maxAgeSec="${REPLAY_DEADBAND_MAX_AGE_SEC:-30}" \
   ${MVN_EXTRA[@]+"${MVN_EXTRA[@]}"} \
   "$JETTY" 2>&1 | tee "$OUT_DIR/engine.log"
 rc=${PIPESTATUS[0]}
