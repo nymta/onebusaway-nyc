@@ -91,6 +91,11 @@ if [ -n "$SHARD" ]; then
   # out the sibling org_onebusaway_database.* files so HSQLDB creates a fresh, private one here instead.
   SHARD_BUNDLE_DIR="/data/oba-bundle-shard${SHARD_INDEX}"
   mkdir -p "$SHARD_BUNDLE_DIR"
+  # A prior run here (possibly against a different bundle) leaves its symlinks behind - the loop
+  # below only adds/updates, so an old one survives alongside the new one otherwise. Standalone
+  # discovery then finds two bundles and, under -Dorg.onebusaway.nyc.tdm.bundle.batchmode=true,
+  # treats both as applicable regardless of date, picking between them arbitrarily.
+  find "$SHARD_BUNDLE_DIR" -maxdepth 1 -type l -delete
   for d in "$BUNDLE"/*/; do
     [ -d "$d" ] || continue
     b="$(basename "$d")"
