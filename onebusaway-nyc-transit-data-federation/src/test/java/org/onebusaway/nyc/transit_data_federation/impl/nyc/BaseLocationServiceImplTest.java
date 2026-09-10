@@ -22,13 +22,18 @@ import static org.junit.Assert.assertNull;
 import java.io.File;
 import java.io.IOException;
 
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
 
 import org.onebusaway.csv_entities.exceptions.CsvEntityIOException;
 import org.onebusaway.geospatial.model.CoordinatePoint;
 import org.onebusaway.nyc.transit_data_federation.bundle.model.NycFederatedTransitDataBundle;
 
 public class BaseLocationServiceImplTest {
+
+  @Rule
+  public TemporaryFolder _tmp = new TemporaryFolder();
 
   @Test
   public void test() throws CsvEntityIOException, IOException, ClassNotFoundException {
@@ -69,5 +74,23 @@ public class BaseLocationServiceImplTest {
         -74.036096)));
     assertNull(service.getTerminalNameForLocation(new CoordinatePoint(
         40.612044, -74.036096)));
+  }
+
+  @Test
+  public void testMissingLocationFiles() throws CsvEntityIOException,
+      IOException, ClassNotFoundException {
+
+    NycFederatedTransitDataBundle bundle = new NycFederatedTransitDataBundle();
+    bundle.setPath(_tmp.newFolder("empty-bundle"));
+
+    BaseLocationServiceImpl service = new BaseLocationServiceImpl();
+    service.setBundle(bundle);
+
+    service.setup();
+
+    assertNull(service.getBaseNameForLocation(new CoordinatePoint(40.651089,
+        -74.001405)));
+    assertNull(service.getTerminalNameForLocation(new CoordinatePoint(
+        40.612025, -74.035552)));
   }
 }
