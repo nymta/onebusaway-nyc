@@ -31,7 +31,7 @@ case "$ACTION" in
     echo "== rebuild (broker + 3 webapps) =="
     # -pl without -am builds only the modules named here, so every changed module must be listed
     # or the webapp links a stale jar from ~/.m2.
-    run_oba "export JAVA_HOME=$JH PATH=$JH/bin:\$PATH MAVEN_OPTS=-Xmx4g; cd /opt/oba/onebusaway-nyc && mvn -B -q -pl onebusaway-nyc-tdm-adapters,onebusaway-nyc-queue-broker,onebusaway-nyc-vehicle-tracking,onebusaway-nyc-vehicle-tracking-webapp,onebusaway-nyc-gtfsrt,onebusaway-nyc-gtfsrt-webapp -DskipTests -Dlicense.skip=true install"
+    run_oba "export JAVA_HOME=$JH PATH=$JH/bin:\$PATH MAVEN_OPTS=-Xmx4g; cd /opt/oba/onebusaway-nyc && mvn -B -q -pl onebusaway-nyc-tdm-adapters,onebusaway-nyc-transit-data-federation,onebusaway-nyc-queue-broker,onebusaway-nyc-vehicle-tracking,onebusaway-nyc-vehicle-tracking-webapp,onebusaway-nyc-gtfsrt,onebusaway-nyc-gtfsrt-webapp -DskipTests -Dlicense.skip=true install"
     # Same trap: without predictions-common, a stale jar missing a class the Spring context
     # references stops predictions from starting at all.
     run_oba "export JAVA_HOME=$JH PATH=$JH/bin:\$PATH MAVEN_OPTS=-Xmx4g; cd /opt/oba/onebusaway-nyc-predictions && mvn -B -q -pl onebusaway-nyc-predictions-common,onebusaway-nyc-predictions-webapp -DskipTests -Dlicense.skip=true install"
