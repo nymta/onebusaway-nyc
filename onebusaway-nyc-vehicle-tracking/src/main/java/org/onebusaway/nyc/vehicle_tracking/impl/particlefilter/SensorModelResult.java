@@ -17,8 +17,6 @@ package org.onebusaway.nyc.vehicle_tracking.impl.particlefilter;
 
 import com.google.common.base.Objects;
 
-import org.apache.commons.math.util.FastMath;
-
 import java.util.ArrayList;
 import java.util.List;
 import java.util.StringJoiner;
@@ -41,9 +39,11 @@ public class SensorModelResult {
 
   public SensorModelResult(String name, double probability) throws BadProbabilityParticleFilterException {
     if (Double.isNaN(probability) || probability < 0d || probability > 1d)
-      throw new BadProbabilityParticleFilterException("invalid weight assignment: weight=" + probability); 
+      throw new BadProbabilityParticleFilterException("invalid weight assignment: weight=" + probability);
     this.name = name;
-    this.logProbability = FastMath.log(probability);
+    // Math.log, not Commons Math's FastMath: this constructor runs per likelihood rule per
+    // particle per fix, and was ~28% of shard CPU time in profiling (JIT intrinsic vs pure-Java).
+    this.logProbability = Math.log(probability);
     this.probability = probability;
     this.refresh = false;
   }
@@ -64,7 +64,7 @@ public class SensorModelResult {
    */
   public double getProbability() {
     if (this.refresh) {
-      this.probability = FastMath.exp(logProbability);
+      this.probability = Math.exp(logProbability);
       this.refresh = false;
     }
     return this.probability;
@@ -76,8 +76,8 @@ public class SensorModelResult {
 
   public void setProbability(double probability) throws BadProbabilityParticleFilterException {
     if (Double.isNaN(probability) || probability < 0d || probability > 1d)
-      throw new BadProbabilityParticleFilterException("invalid weight assignment: weight=" + probability); 
-    this.logProbability = FastMath.log(probability);
+      throw new BadProbabilityParticleFilterException("invalid weight assignment: weight=" + probability);
+    this.logProbability = Math.log(probability);
     this.probability = probability;
     this.refresh = false;
   }
@@ -112,9 +112,14 @@ public class SensorModelResult {
   }
 
   public SensorModelResult addResult(SensorModelResult result) {
-    if (results == null)
-      results = new ArrayList<SensorModelResult>();
-    results.add(result);
+    // Only kept for toString()'s debug breakdown; skip the bookkeeping the rest of the time.
+    // This runs once per likelihood rule per particle per fix, so the ArrayList alone was a
+    // top allocation source in profiling.
+    if (ParticleFilter.getDebugEnabled()) {
+      if (results == null)
+        results = new ArrayList<SensorModelResult>();
+      results.add(result);
+    }
 
     return result;
   }
