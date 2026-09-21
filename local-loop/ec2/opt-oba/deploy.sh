@@ -28,13 +28,11 @@ case "$ACTION" in
     # Checkout, not just pull: otherwise this repo stays on whatever branch the host clone is on.
     run_oba "cd /opt/oba/onebusaway-nyc-predictions && GIT_SSH_COMMAND='ssh -F ~/.ssh/config' git fetch -q --all && git checkout -q '$PRED_REF' && git pull -q --ff-only && echo pred @ \$(git rev-parse --short HEAD)" \
       || { echo "ERROR: predictions repo could not check out '$PRED_REF' -- aborting before rebuild"; exit 1; }
-    echo "== rebuild (broker + 3 webapps) =="
-    # -pl without -am builds only the modules named here, so every changed module must be listed
-    # or the webapp links a stale jar from ~/.m2.
-    run_oba "export JAVA_HOME=$JH PATH=$JH/bin:\$PATH MAVEN_OPTS=-Xmx4g; cd /opt/oba/onebusaway-nyc && mvn -B -q -pl onebusaway-nyc-tdm-adapters,onebusaway-nyc-transit-data-federation,onebusaway-nyc-queue-broker,onebusaway-nyc-vehicle-tracking,onebusaway-nyc-vehicle-tracking-webapp,onebusaway-nyc-gtfsrt,onebusaway-nyc-gtfsrt-webapp -DskipTests -Dlicense.skip=true install"
-    # Same trap: without predictions-common, a stale jar missing a class the Spring context
-    # references stops predictions from starting at all.
-    run_oba "export JAVA_HOME=$JH PATH=$JH/bin:\$PATH MAVEN_OPTS=-Xmx4g; cd /opt/oba/onebusaway-nyc-predictions && mvn -B -q -pl onebusaway-nyc-predictions-common,onebusaway-nyc-predictions-webapp -DskipTests -Dlicense.skip=true install"
+    echo "== rebuild (broker + 2 webapps) =="
+    # -am: build the broker + both webapps plus whatever each actually depends on
+    run_oba "export JAVA_HOME=$JH PATH=$JH/bin:\$PATH MAVEN_OPTS=-Xmx4g; cd /opt/oba/onebusaway-nyc && mvn -B -q -pl onebusaway-nyc-queue-broker,onebusaway-nyc-vehicle-tracking-webapp,onebusaway-nyc-gtfsrt-webapp -am -DskipTests -Dlicense.skip=true install"
+    # -am: build the webapp plus whatever it actually depends on
+    run_oba "export JAVA_HOME=$JH PATH=$JH/bin:\$PATH MAVEN_OPTS=-Xmx4g; cd /opt/oba/onebusaway-nyc-predictions && mvn -B -q -pl onebusaway-nyc-predictions-webapp -am -DskipTests -Dlicense.skip=true install"
     echo "== install host scripts =="
     SRC=/opt/oba/onebusaway-nyc/local-loop/ec2
     for f in env-common.sh run-broker.sh run-inference.sh run-predictions.sh run-gtfsrt.sh deploy.sh monitor.sh set-weights.sh; do
