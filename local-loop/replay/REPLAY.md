@@ -14,7 +14,7 @@ local-loop/replay/replay-stream.sh \
   -- -Dreplay.routeFilter='^M[0-9]'          # optional extras after --
 ```
 
-Or from a local fixture: `local-loop/replay/replay.sh <fixture.jsonl>`. Both run in the foreground
+Or, from a local fixture: `local-loop/replay/replay.sh <fixture.jsonl>`. Both run in the foreground
 (Ctrl-C ends the run - each replay needs a fresh JVM). Start `local-loop/observe-inferred.sh` first,
 or skip it and write to a local spool instead (`-Doba.replay.output.dir`, see the flags below).
 Two-run reproducibility check: `local-loop/replay/determinism/replay-determinism.sh [fixture] -- <extra -D args>`.
