@@ -43,6 +43,11 @@ case "$ACTION" in
     install -m 755 "$SRC/opt-oba/predictions-archiver.py" /opt/oba/predictions-archiver.py
     install -m 755 "$SRC/opt-oba/run-predictions-archiver.sh" /opt/oba/run-predictions-archiver.sh
     install -m 644 "$SRC/systemd/oba-predictions-archiver.service" /etc/systemd/system/oba-predictions-archiver.service
+    echo "== install component-capture archiver =="
+    install -m 755 "$SRC/opt-oba/component-capture-archiver.py" /opt/oba/component-capture-archiver.py
+    install -m 755 "$SRC/opt-oba/run-component-capture-archiver.sh" /opt/oba/run-component-capture-archiver.sh
+    install -m 644 "$SRC/systemd/oba-component-capture-archiver.service" /etc/systemd/system/oba-component-capture-archiver.service
+    install -m 644 "$SRC/systemd/oba-component-capture-archiver.timer" /etc/systemd/system/oba-component-capture-archiver.timer
     echo "== predictions archiver host prereqs =="
     mkdir -p /data/predictions-archive
     chown oba:oba /data/predictions-archive
@@ -58,6 +63,8 @@ case "$ACTION" in
     runuser -u oba -- python3 -m pip install --user -q pyzmq pika 2>/dev/null || python3 -m pip install -q pyzmq pika
     systemctl daemon-reload
     systemctl enable oba-predictions-archiver.service
+    # --now: enable alone only activates a unit on next boot, not immediately.
+    systemctl enable --now oba-component-capture-archiver.timer
     # The source ZMQ queue only answers hosts whose egress is an allowlisted Elastic IP, so the
     # publisher is opt-in per host via OBA_CSPUB_ENABLED=1 in env-local.sh. Everywhere else the unit
     # stays installed but inert -- enabling it would just retry a connection that always times out.
