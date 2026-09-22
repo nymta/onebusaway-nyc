@@ -12,11 +12,12 @@ already this system's dominant failure mode (see the `env-common.sh` trap below)
 No secrets here — RabbitMQ and S3 credentials come from SSM Parameter Store at runtime via
 `env-common.sh`'s `gp()` helper.
 
-| file | instance | input stream | deadband | archive prefix |
-|---|---|---|---|---|
-| `oba-nyc-prod.sh` | `i-0386b6bb8338b2f67` | `nyct.bustech.gps` | 10 m / 7 s / 30 s (defaults) | `v1/` |
-| `oba-nyc-filtered.sh` | `i-0d78f39b83d961f5c` | `nyct.bustech.gps-filtered` | **off** (pre-filtered upstream) | `v3-filtered/` |
-| `oba-nyc-fused-gps.sh` | `i-0a45277b7b11ea8be` | `nyct.bus.fused-gps` | 10 m / 7 s / 30 s (explicit) | `v4-fused-gps/` |
+| file | instance | input stream | deadband | archive prefix | weights (S/H/R/T) |
+|---|---|---|---|---|---|
+| `oba-nyc-prod.sh` | `i-0386b6bb8338b2f67` | `nyct.bustech.gps` | 10 m / 7 s / 30 s (defaults) | `v1/` | `20/40/40/0` (shared SSM default) |
+| `oba-nyc-filtered.sh` | `i-0d78f39b83d961f5c` | `nyct.bustech.gps-filtered` | **off** (pre-filtered upstream) | `v3-filtered/` | `20/40/40/0` (shared SSM default) |
+| `oba-nyc-fused-gps.sh` | `i-0a45277b7b11ea8be` | `nyct.bus.fused-gps` | 10 m / 7 s / 30 s (explicit) | `v4-fused-gps/` | `20/40/40/0` (shared SSM default) |
+| `oba-nyc-traffic.sh` | `i-0a0d51b7c668935d1` | `nyct.bustech.gps` (same as prod) | 10 m / 7 s / 30 s (defaults, same as prod) | `v5-traffic-weights/` | `10/30/30/30` (`OBA_PREDICTIONS_WEIGHTS`, instance-local) |
 
 ## Check an instance against its tracked config
 
