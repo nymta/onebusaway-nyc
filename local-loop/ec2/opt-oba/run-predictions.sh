@@ -13,6 +13,7 @@ exec mvn -B -DskipTests -Dlicense.skip=true \
   -Dlog4j.configurationFile=/opt/oba/log4j2-predictions.xml \
   -Dorg.onebusaway.nyc.tdm.bundle.batchmode=true \
   -Doba.config.predictions.PredictionLevel=NEXT_TRIP \
+  -Doba.config.predictions.componentFallbackMode="${OBA_PREDICTIONS_FALLBACK_MODE:-FILL_WITH_SCHEDULE}" \
   -Dtrafficgraph.host=32.194.116.29 \
   -Dtrafficgraph.port=80 \
   -Dpredictions.componentCapture.outputFile=/data/predictions-archive/component-capture.csv \
