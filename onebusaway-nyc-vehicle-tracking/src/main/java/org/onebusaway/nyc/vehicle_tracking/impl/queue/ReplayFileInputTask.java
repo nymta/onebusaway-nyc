@@ -489,9 +489,10 @@ public class ReplayFileInputTask implements ServletContextAware, InputTask {
             if (nowMs - lastReadReport >= READER_REPORT_MS) {
               long elapsed = nowMs - wallStart;
               _log.warn(String.format(
-                  "replay: read %d, dispatched %d, rejected %d, filtered " + filtered + " in %.0fs"
+                  "replay: read %d, dispatched %d, rejected %d (uuid %d), filtered " + filtered + " in %.0fs"
                       + " | throttled %.0fs (%.0f%%) | %d pending | active %d | %.0f rec/s dispatched",
-                  read, dispatched, rejected, elapsed / 1000.0, throttleMs / 1000.0,
+                  read, dispatched, rejected, _inputService.getUuidFilteredCount(),
+                  elapsed / 1000.0, throttleMs / 1000.0,
                   elapsed > 0 ? 100.0 * throttleMs / elapsed : 0.0,
                   _vehicleLocationService.getOutstandingTaskCount(),
                   _vehicleLocationService.stripesActiveCount(),
@@ -563,12 +564,12 @@ public class ReplayFileInputTask implements ServletContextAware, InputTask {
       // inferred-location output should account for every dispatched record minus whatever the
       // filter itself refused (VehicleInferenceInstance:198 and :245).
       _log.warn(String.format(
-          "replay: done. read=%d wrapped=%d dispatched=%d rejected=%d filtered=%d%s"
+          "replay: done. read=%d wrapped=%d dispatched=%d rejected=%d (uuid=%d) filtered=%d%s"
               + " unparsed=%d outOfOrder=%d"
               + " | data span %.1fs | dispatch %.1fs (throttled %.1fs over %d waits),"
               + " drain %.1fs, total %.1fs wall (%.1fx) | %.0f rec/s inferred"
               + " | virtual clock now %d",
-          read, wrapped, dispatched, rejected, filtered,
+          read, wrapped, dispatched, rejected, _inputService.getUuidFilteredCount(), filtered,
           _routeFilter == null ? "" : " (" + _admittedVehicles.size() + " vehicles admitted)",
           unparsed, outOfOrder, dataS,
           dispatchMs / 1000.0, throttleMs / 1000.0, throttleWaits,

@@ -72,6 +72,7 @@ Env var overrides, not flags: `OBA_PF_DEBUG`, `OBA_DEADBAND_ENABLED/_MIN_METERS/
 | `--tag NAME` | Prefixes the run's label (and `OUT_DIR`/`OUT_S3`/CloudWatch `RunId`) - `merge-shard-output.py --label` auto-discovers shards by this same prefix |
 | `--prefix s3://...` | Source bucket/prefix, default `s3://mtalirr/data-archiver/bustechGps/` |
 | `--limit N` | Cap the number of source objects fed in |
+| `--uuid-versions V` | Keep only pings whose UUID version (character at index 14) is in `V`, checked before the deadband. For `fusedGps`, `3` = Clever-derived, `1` = BusTech-derived. Sets `-Doba.ingest.uuidVersions` |
 | `s3://bucket/key.jsonl.gz ...` | Explicit source objects instead of `--prefix`/`--from`/`--to` |
 | `-D... extra args` | Passed straight to the JVM; see below |
 
@@ -98,6 +99,7 @@ Env var overrides, not flags: `OBA_PF_DEBUG`, `OBA_DEADBAND_ENABLED/_MIN_METERS/
 | `-Dreplay.vehicleShard=i/n` | Set automatically by `run-replay.sh --shard`; not meant to be passed directly |
 | `-Doba.crew.snapshotDir=<dir>` | Roster from prefetched snapshots, as-of the replay clock |
 | `-Doba.crew.disabled=true` | Skip UTS entirely, when no snapshot directory is available |
+| `-Doba.ingest.uuidVersions=V` | Drop pings whose UUID version is not in `V` (missing UUIDs are dropped too); counted as `uuid` inside `rejected` on the replay progress and `done` lines. Unset = off |
 | `-Doba.replay.tasks=A,B` | Background task domains to allow; empty blocks everything, `ALL` allows all |
 | `-Doba.inference.threads=N` | Stripe/pool thread count; `1` removes threading as a variable |
 | `-Doba.inference.sharedPool=false` | Opt out of the default shared-pool dispatch back into fixed per-vehicle stripes - see WORKLOG.md, 2026-08-26 |

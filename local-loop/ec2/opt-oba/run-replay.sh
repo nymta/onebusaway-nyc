@@ -4,7 +4,8 @@
 #
 # Usage:
 #   run-replay.sh [--from D[/HH-MM]] [--to D[/HH-MM]] [--limit N] [--shard i/n] [--tag NAME]
-#                 [--prefix s3://...] [extra -D args...]  (D = YYYY-MM-DD, HH-MM = ET slot start)
+#                 [--prefix s3://...] [--uuid-versions V] [extra -D args...]
+#                 (D = YYYY-MM-DD, HH-MM = ET slot start)
 #   run-replay.sh s3://BUCKET/key1.jsonl.gz [s3://BUCKET/key2.jsonl.gz ...] [extra -D args...]
 #
 # --prefix defaults to s3://mtalirr/data-archiver/bustechGps/, the one archive there is; only
@@ -18,6 +19,9 @@
 # installed). Omit --shard entirely for a plain, single-process run - nothing above applies.
 # --tag NAME: prefixes NAME- onto this run's LABEL (and hence OUT_DIR/OUT_S3/CloudWatch RunId), so
 # related runs are easy to pick out by eye rather than by timestamp alone.
+# --uuid-versions V: keep only pings whose UUID version (character at index 14) is one of the
+# characters in V, checked before the deadband. For fusedGps, "3" keeps only Clever-derived pings and
+# "1" only BusTech-derived ones. Omit it to keep every ping.
 #
 # Environment:
 #   REPLAY_OUT_S3     s3://bucket/prefix for inference output parts (default: none, spool stays local)
@@ -50,10 +54,11 @@ NPROC=$(getconf _NPROCESSORS_ONLN)
 REPLAY_THREADS_DEFAULT=$NPROC
 [ "$REPLAY_THREADS_DEFAULT" -gt 3 ] && REPLAY_THREADS_DEFAULT=$((REPLAY_THREADS_DEFAULT - 2))
 
-SOURCES=(); MVN_EXTRA=(); PREFIX=""; LIMIT=0; FROM=""; TO=""; TO_RAW=""; SHARD=""; TAG=""
+SOURCES=(); MVN_EXTRA=(); PREFIX=""; LIMIT=0; FROM=""; TO=""; TO_RAW=""; SHARD=""; TAG=""; UUID_VERSIONS=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --prefix) PREFIX="$2"; shift 2 ;;
+    --uuid-versions) UUID_VERSIONS="$2"; shift 2 ;;
     --limit)  LIMIT="$2"; shift 2 ;;
     --from)   FROM="$2"; shift 2 ;;
     --to)     TO="$2"; TO_RAW="$2"; shift 2 ;;
@@ -128,7 +133,10 @@ if [ -n "$PREFIX" ]; then
   [ "$LIMIT" -gt 0 ] && keys=$(printf '%s\n' "$keys" | head -n "$LIMIT")
   while IFS= read -r k; do SOURCES+=("s3://$bucket/$k"); done <<< "$keys"
 fi
-[ "${#SOURCES[@]}" -gt 0 ] || { sed -n '2,18p' "$0"; exit 2; }
+[ "${#SOURCES[@]}" -gt 0 ] || { sed -n '2,19p' "$0"; exit 2; }
+
+UUID_ARGS=()
+[ -n "$UUID_VERSIONS" ] && UUID_ARGS=(-Doba.ingest.uuidVersions="$UUID_VERSIONS")
 
 # Run label from the window bounds, or from the first/last source when explicit URIs were given.
 slot_of() {
@@ -309,6 +317,7 @@ mvn -B -P local-ie-testing -DskipTests -Dlicense.skip=true \
   -Doba.deadband.minMeters="${REPLAY_DEADBAND_MIN_METERS:-0}" \
   -Doba.deadband.minIntervalSec="${REPLAY_DEADBAND_MIN_INTERVAL_SEC:-7}" \
   -Doba.deadband.maxAgeSec="${REPLAY_DEADBAND_MAX_AGE_SEC:-30}" \
+  ${UUID_ARGS[@]+"${UUID_ARGS[@]}"} \
   ${MVN_EXTRA[@]+"${MVN_EXTRA[@]}"} \
   "$JETTY" 2>&1 | tee "$OUT_DIR/engine.log"
 rc=${PIPESTATUS[0]}

@@ -18,6 +18,7 @@ package org.onebusaway.nyc.vehicle_tracking.impl.queue;
 
 import java.util.ArrayList;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 import javax.annotation.PostConstruct;
 
@@ -60,6 +61,10 @@ public abstract class InputServiceImpl {
 	private long _deadbandMinIntervalMs = 10000L;
 	private long _deadbandMaxAgeMs = 30000L;
 
+	// Optional UUID-version filter (see passesUuidFilter). Null -> off.
+	private String _uuidVersions = null;
+	private final AtomicLong _uuidFiltered = new AtomicLong();
+
 	@Autowired
 	public void setVehicleAssignmentService(
 			VehicleAssignmentService vehicleAssignmentService) {
@@ -95,6 +100,9 @@ public abstract class InputServiceImpl {
 			_log.info("ingestion deadband ENABLED: minMeters=" + _deadbandMinMeters
 					+ " minIntervalSec=" + (_deadbandMinIntervalMs / 1000)
 					+ " maxAgeSec=" + (_deadbandMaxAgeMs / 1000));
+		_uuidVersions = StringUtils.trimToNull(System.getProperty("oba.ingest.uuidVersions"));
+		if (_uuidVersions != null)
+			_log.info("ingestion UUID-version filter ENABLED: keeping versions [" + _uuidVersions + "]");
 	}
 
 	public boolean processMessage(String address, byte[] buff) throws Exception {
@@ -145,7 +153,7 @@ public abstract class InputServiceImpl {
 		if (_configurationService != null
 				&& Boolean.parseBoolean(_configurationService.getConfigurationValueAsString(
 						"inference-engine.acceptAllVehicles", "false")))
-			return passesDeadband(envelope);
+			return passesUuidFilter(envelope) && passesDeadband(envelope);
 
 		final CcLocationReport message = envelope.getCcLocationReport();
 		final ArrayList<AgencyAndId> vehicleList = new ArrayList<AgencyAndId>();
@@ -169,7 +177,27 @@ public abstract class InputServiceImpl {
 				vehicleIdent.getAgencydesignator(), vehicleIdent.getVehicleId()
 						+ "");
 
-		return vehicleList.contains(vehicleId) && passesDeadband(envelope);
+		return vehicleList.contains(vehicleId) && passesUuidFilter(envelope) && passesDeadband(envelope);
+	}
+
+	/**
+	 * Optional filter on UUID version (the character at index 14): keeps a ping only if its version is
+	 * listed in -Doba.ingest.uuidVersions (e.g. "3" = fusedGps pings synthesized from Clever, "1" =
+	 * pings carrying BusTech's own UUID). Runs before the deadband so dropped pings never become its
+	 * last-kept fix. A missing or short UUID is dropped while the filter is on. Default off.
+	 */
+	protected boolean passesUuidFilter(RealtimeEnvelope envelope) {
+		if (_uuidVersions == null)
+			return true;
+		final String uuid = envelope.getUUID();
+		if (uuid != null && uuid.length() > 14 && _uuidVersions.indexOf(uuid.charAt(14)) >= 0)
+			return true;
+		_uuidFiltered.incrementAndGet();
+		return false;
+	}
+
+	public long getUuidFilteredCount() {
+		return _uuidFiltered.get();
 	}
 
 	/**

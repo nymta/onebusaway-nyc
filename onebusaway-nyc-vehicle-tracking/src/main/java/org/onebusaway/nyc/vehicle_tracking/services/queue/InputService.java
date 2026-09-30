@@ -32,5 +32,6 @@ public interface InputService {
 	void setMapper(ObjectMapper _mapper);
 	String getDepotPartitionKey();
 	void setDepotPartitionKey(String depotPartitionKey);
+	long getUuidFilteredCount();
 
 }
