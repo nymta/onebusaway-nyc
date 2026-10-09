@@ -34,7 +34,7 @@ uploads.
 
 ```bash
 # In tmux session 1
-python3 local-loop/replay/merge-shard-output.py --label RUN_NAME
+python3 local-loop/replay/merge-shard-output.py --label RUN_NAME --stop-instance-when-done   # stops (not terminates) the box when every shard is done
 # In tmux session 2
 /opt/oba/run-replay.sh --tag RUN_NAME --shard 0/2 --from D[/HH-MM] --to D[/HH-MM]
 # In tmux session 3

@@ -10,7 +10,7 @@ step. Run one instance alongside two or more `run-replay.sh --shard i/n` invocat
 invocation never uploads its own (wrongly-bucketed) output - this is the only thing that does.
 
 Usage:
-  merge-shard-output.py --label TAG
+  merge-shard-output.py --label TAG [--stop-instance-when-done]
   merge-shard-output.py --shard-dir DIR --shard-dir DIR [...] --s3-prefix s3://bucket/prefix/
                          [--roll-minutes 15] [--poll-seconds 15] [--state-file PATH]
 
@@ -35,6 +35,11 @@ not a live watermark read from JVM internals, which this process has no visibili
 tail buckets of a finished run are the exception: run-replay.sh writes a REPLAY_DONE sentinel
 into its OUT_DIR on exit, and once every shard has one, this finalizes immediately rather than
 waiting forever for a "next" nominal file that stopped replay will never produce.
+
+--stop-instance-when-done shuts the OS down 1 minute after finalizing, but only when every shard wrote
+REPLAY_DONE (not on a signal). On EC2 that STOPS the box only if its InstanceInitiatedShutdownBehavior
+is "stop"; with "terminate" it would delete it.
+Cancel within the minute with `sudo shutdown -c`.
 
 Never exits non-zero from a steady-state error. A malformed line, a missing shard directory,
 or a failed upload is logged and retried on the next tick - only startup/argument errors are
@@ -333,7 +338,7 @@ def run(shard_dirs, scratch_dir, s3_prefix, roll_minutes, poll_seconds, state_pa
             except Exception:
                 logging.exception("error during finalize; some buckets may remain un-uploaded "
                                    "in %s - safe to rerun this script to pick them up", scratch_dir)
-            return
+            return not _shutdown_requested
 
         time.sleep(poll_seconds)
 
@@ -403,6 +408,8 @@ def main():
     p.add_argument("--poll-seconds", type=int, default=15)
     p.add_argument("--state-file", default=None)
     p.add_argument("--scratch-dir", default=None)
+    p.add_argument("--stop-instance-when-done", action="store_true",
+                   help="shut the OS down (stops the EC2 box) after every shard finished and finalize ran")
     args = p.parse_args()
 
     logging.basicConfig(level=logging.INFO, stream=sys.stderr,
@@ -441,7 +448,12 @@ def main():
 
     logging.info("merging %s -> %s (roll=%dmin, poll=%ds, state=%s)",
                  args.shard_dirs, args.s3_prefix, args.roll_minutes, args.poll_seconds, state_path)
-    run(args.shard_dirs, scratch_dir, args.s3_prefix, args.roll_minutes, args.poll_seconds, state_path)
+    all_done = run(args.shard_dirs, scratch_dir, args.s3_prefix, args.roll_minutes, args.poll_seconds, state_path)
+    if args.stop_instance_when_done and all_done:
+        # A stop keeps the data volume, so un-uploaded buckets from a failed finalize survive for a rerun.
+        logging.warning("every shard finished: shutting down in 1 minute (cancel: sudo shutdown -c)")
+        cmd = ["shutdown", "-h", "+1"] if os.geteuid() == 0 else ["sudo", "-n", "shutdown", "-h", "+1"]
+        subprocess.run(cmd, check=False)
 
 
 if __name__ == "__main__":
