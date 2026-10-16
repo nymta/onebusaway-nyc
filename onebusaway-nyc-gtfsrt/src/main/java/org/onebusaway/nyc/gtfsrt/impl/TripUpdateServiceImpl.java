@@ -130,7 +130,7 @@ public class TripUpdateServiceImpl extends AbstractFeedMessageService {
             // and send schedule relationship CANCELED
             TripBean tripBean = getBeanForTrip(bean.getTrip());
             if (tripBean != null) {
-                GtfsRealtime.TripUpdate.Builder tu = _feedBuilder.makeCanceledTrip(tripBean);
+                GtfsRealtime.TripUpdate.Builder tu = _feedBuilder.makeCanceledTrip(tripBean, bean);
                 FeedEntity.Builder entity = FeedEntity.newBuilder();
                 entity.setTripUpdate(tu);
                 entity.setId(tu.getTrip().getTripId());

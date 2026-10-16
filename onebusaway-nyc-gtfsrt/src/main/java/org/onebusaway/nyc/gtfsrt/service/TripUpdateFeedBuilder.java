@@ -19,6 +19,7 @@ import com.google.transit.realtime.GtfsRealtime;
 import org.onebusaway.realtime.api.TimepointPredictionRecord;
 import org.onebusaway.transit_data.model.VehicleStatusBean;
 import org.onebusaway.transit_data.model.trip_mods.TripModificationDiff;
+import org.onebusaway.transit_data.model.trips.CancelledTripBean;
 import org.onebusaway.transit_data.model.trips.TripBean;
 
 import java.time.LocalDate;
@@ -36,4 +37,13 @@ public interface TripUpdateFeedBuilder {
                                                    Collection<TimepointPredictionRecord> records);
 
     GtfsRealtime.TripUpdate.Builder makeCanceledTrip(TripBean trip);
+
+    /**
+     * A CANCELED trip update dated with the cancelled trip's own service date. Consumers key on
+     * (trip_id, start_date), so the date must be the trip's rather than today's. Falls back to the
+     * one-argument form when the bean carries no service date.
+     */
+    default GtfsRealtime.TripUpdate.Builder makeCanceledTrip(TripBean trip, CancelledTripBean cancelled) {
+        return makeCanceledTrip(trip);
+    }
 }

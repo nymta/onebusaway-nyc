@@ -190,6 +190,7 @@ public class RealtimeServiceV2Impl implements RealtimeServiceV2 {
 					OnwardCallsMode.VEHICLE_MONITORING, _presentationService,
 					_nycTransitDataService, maximumOnwardCalls,
 					stopIdToPredictionRecordMap, detailLevel, currentTime, null, showApc, showRawApc, false);
+			SiriSupportV2.removeSkippedOnwardCalls(activity.getMonitoredVehicleJourney());
 
 			output.add(activity);
 		}
@@ -255,6 +256,7 @@ public class RealtimeServiceV2Impl implements RealtimeServiceV2 {
 					OnwardCallsMode.VEHICLE_MONITORING, _presentationService,
 					_nycTransitDataService, maximumOnwardCalls,
 					stopIdToPredictionRecordMap, detailLevel,currentTime, null, showApc, showRawApc, false);
+			SiriSupportV2.removeSkippedOnwardCalls(output.getMonitoredVehicleJourney());
 
 			return output;
 		}
@@ -337,6 +339,13 @@ public class RealtimeServiceV2Impl implements RealtimeServiceV2 {
 					_nycTransitDataService, maximumOnwardCalls,
 					stopIdToPredictionRecordMap, detailLevel, currentTime, filters, showApc, showRawApc, isCancelled);
 
+			if (!showCancelledTrips) {
+				// a skipped stop: hide the visit, as a cancelled trip is hidden
+				if (SiriSupportV2.hasSkippedMonitoredCall(mvjourney)) {
+					continue;
+				}
+				SiriSupportV2.removeSkippedOnwardCalls(mvjourney);
+			}
 
 			// Monitored Stop Visits
 			Map<String, MonitoredStopVisitStructure> visitsMap = new HashMap<String, MonitoredStopVisitStructure>();

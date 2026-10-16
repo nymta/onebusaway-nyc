@@ -152,6 +152,7 @@ public class RealtimeServiceImpl implements RealtimeService {
       MonitoredVehicleJourney monitoredVehicleJourney = _siriMvjBuilderService.makeMonitoredVehicleJourney(
               tripDetails.getTrip(), tripDetails.getStatus(), null, stopIdToPredictionRecordMap,
               OnwardCallsMode.VEHICLE_MONITORING, maximumOnwardCalls, currentTime, showApc, showRawApc, false,vehicleFeatures);
+      SkippedStopSupport.removeSkippedOnwardCalls(monitoredVehicleJourney);
 
       activity.setMonitoredVehicleJourney(monitoredVehicleJourney);
       setTripDetourStatusExtension(activity, tripDetails.getTrip().getId(), tripDetails.getStatus().getServiceDate());
@@ -205,6 +206,7 @@ public class RealtimeServiceImpl implements RealtimeService {
       MonitoredVehicleJourney monitoredVehicleJourney = _siriMvjBuilderService.makeMonitoredVehicleJourney(
               tripDetailsForCurrentTrip.getTrip(), tripDetailsForCurrentTrip.getStatus(), null, stopIdToPredictionRecordMap,
               OnwardCallsMode.STOP_MONITORING, maximumOnwardCalls, currentTime, showApc, showRawApc, false,vehicleFeatures);
+      SkippedStopSupport.removeSkippedOnwardCalls(monitoredVehicleJourney);
 
       output.setMonitoredVehicleJourney(monitoredVehicleJourney);
       setTripDetourStatusExtension(output, tripDetailsForCurrentTrip.getTrip().getId(),
@@ -262,6 +264,14 @@ public class RealtimeServiceImpl implements RealtimeService {
       MonitoredVehicleJourneyStructure monitoredVehicleJourney = _siriMvjBuilderService.makeMonitoredVehicleJourneyStructure(
               tripBeanForAd, statusBeanForCurrentTrip, adBean.getStop(), stopIdToPredictionRecordMap,
               OnwardCallsMode.STOP_MONITORING, maximumOnwardCalls, currentTime, showApc, showRawApc, isCancelled,vehicleFeatures);
+
+      if(!showCancelledTrips) {
+        // a skipped stop: hide the visit, as a cancelled trip is hidden
+        if(SkippedStopSupport.hasSkippedMonitoredCall(monitoredVehicleJourney)) {
+          continue;
+        }
+        SkippedStopSupport.removeSkippedOnwardCalls(monitoredVehicleJourney);
+      }
 
       if(showCancelledTrips && isCancelled){
         monitoredVehicleJourney.getMonitoredCall().setArrivalStatus(ProgressStatusEnumeration.CANCELLED);

@@ -90,6 +90,10 @@
     <bean id="cancelledTripListener" class="org.onebusaway.nyc.transit_data_federation.impl.queue.CancelledTripHttpListenerTask">
     </bean>
 
+    <!-- Cancelled trips from the predictions queue (its FULL_DATASET messages); idle while tds.enableCapi is true -->
+    <bean id="cancelledTripsFromPredictions" class="org.onebusaway.nyc.transit_data_federation.impl.predictions.PredictionCancelledTripsSource">
+    </bean>
+
 <!--    <bean class="org.onebusaway.nyc.transit_data_federation.impl.nyc.NycRouteTypeService"/>-->
 
 

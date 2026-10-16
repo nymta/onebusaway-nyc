@@ -26,6 +26,7 @@ import org.onebusaway.gtfs.model.AgencyAndId;
 import org.onebusaway.nyc.presentation.impl.AgencySupportLibrary;
 import org.onebusaway.nyc.presentation.impl.DateUtil;
 import org.onebusaway.nyc.presentation.impl.realtime.SiriSupportPredictionTimepointRecord;
+import org.onebusaway.nyc.presentation.impl.realtime.SkippedStopSupport;
 import org.onebusaway.nyc.presentation.service.realtime.PresentationService;
 import org.onebusaway.nyc.siri.support.SiriApcExtension;
 import org.onebusaway.nyc.siri.support.SiriExtensionWrapper;
@@ -54,6 +55,7 @@ import uk.org.siri.siri_2.AnnotatedLineStructure.Destinations;
 import uk.org.siri.siri_2.AnnotatedLineStructure.Directions;
 import uk.org.siri.siri_2.AnnotatedStopPointStructure;
 import uk.org.siri.siri_2.BlockRefStructure;
+import uk.org.siri.siri_2.CallStatusEnumeration;
 import uk.org.siri.siri_2.DataFrameRefStructure;
 import uk.org.siri.siri_2.DestinationRefStructure;
 import uk.org.siri.siri_2.DirectionRefStructure;
@@ -94,8 +96,39 @@ public final class SiriSupportV2 {
 	}
 
 	public enum Filters {
-		DIRECTION_REF, OPERATOR_REF, LINE_REF, USE_LINE_REF, UPCOMING_SCHEDULED_SERVICE, 
+		DIRECTION_REF, OPERATOR_REF, LINE_REF, USE_LINE_REF, UPCOMING_SCHEDULED_SERVICE,
 		DETAIL_LEVEL, MAX_STOP_VISITS, MIN_STOP_VISITS, INCLUDE_POLYLINES
+	}
+
+	/*
+	 * Skipped stops, the siri_2 twin of SkippedStopSupport: a call the bus will not serve
+	 * (prediction record SKIPPED) gets no expected times and is marked CANCELLED. The realtime
+	 * service drops such calls, and a stop visit whose monitored call is skipped, unless the request
+	 * asked for cancelled trips. v2 marks a cancelled trip on the journey, never on its calls, so a
+	 * CANCELLED call always identifies a skipped stop.
+	 */
+	private static void markSkipped(OnwardCallStructure call) {
+		call.setArrivalStatus(CallStatusEnumeration.CANCELLED);
+		call.setDepartureStatus(CallStatusEnumeration.CANCELLED);
+	}
+
+	private static void markSkipped(MonitoredCallStructure call) {
+		call.setArrivalStatus(CallStatusEnumeration.CANCELLED);
+		call.setDepartureStatus(CallStatusEnumeration.CANCELLED);
+	}
+
+	public static boolean hasSkippedMonitoredCall(MonitoredVehicleJourneyStructure journey) {
+		return journey != null
+				&& journey.getMonitoredCall() != null
+				&& journey.getMonitoredCall().getArrivalStatus() == CallStatusEnumeration.CANCELLED;
+	}
+
+	public static void removeSkippedOnwardCalls(MonitoredVehicleJourneyStructure journey) {
+		if (journey == null || journey.getOnwardCalls() == null) {
+			return;
+		}
+		journey.getOnwardCalls().getOnwardCall()
+				.removeIf(call -> call.getArrivalStatus() == CallStatusEnumeration.CANCELLED);
 	}
 
 	/**
@@ -917,7 +950,9 @@ public final class SiriSupportV2 {
 		boolean isNearFirstStop = false;
 		if (distanceOfCallAlongTrip < 100) isNearFirstStop = true;
 
-		if(prediction != null) {
+		if(SkippedStopSupport.isSkipped(prediction)) {
+			markSkipped(onwardCallStructure); // no expected time for a stop the bus will not serve
+		} else if(prediction != null) {
 			if (prediction.getTimepointPredictionRecord().getTimepointPredictedArrivalTime() < responseTimestamp) {
 				if (!isNearFirstStop) { onwardCallStructure.setExpectedArrivalTime(DateUtil.toXmlGregorianCalendar(responseTimestamp));}
 				else {
@@ -971,7 +1006,9 @@ public final class SiriSupportV2 {
 		NaturalLanguageStringStructure stopPoint = new NaturalLanguageStringStructure();
 		stopPoint.setValue(stopBean.getName());
 
-		if(prediction != null) {
+		if(SkippedStopSupport.isSkipped(prediction)) {
+			markSkipped(monitoredCallStructure); // no expected time for a stop the bus will not serve
+		} else if(prediction != null) {
 			fillExpectedArrivalDepartureTimes(monitoredCallStructure,
 					prediction.getTimepointPredictionRecord().getTimepointPredictedArrivalTime(),
 					prediction.getTimepointPredictionRecord().getTimepointPredictedDepartureTime(),

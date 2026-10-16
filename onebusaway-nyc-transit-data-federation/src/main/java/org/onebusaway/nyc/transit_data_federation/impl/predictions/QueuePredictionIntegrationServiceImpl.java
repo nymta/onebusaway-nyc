@@ -70,6 +70,14 @@ public class QueuePredictionIntegrationServiceImpl extends
 	@Autowired
 	private ConfigurationService _configurationService;
 
+	// a FULL_DATASET message on this queue is the engine's set of cancelled trips, see PredictionCancelledTripsSource
+	private PredictionCancelledTripsSource _cancelledTripsSource;
+
+	@Autowired(required = false)
+	public void setCancelledTripsSource(PredictionCancelledTripsSource source) {
+		_cancelledTripsSource = source;
+	}
+
 
 	private Cache<String, Map<String, TimepointPredictionRecord>> _predictionsByStopIdCache = null;
 	private Cache<String, Collection<TimepointPredictionRecord>> _predictionsCache = null;
@@ -150,6 +158,13 @@ public class QueuePredictionIntegrationServiceImpl extends
 			return;
 		}
 
+		if (PredictionCancelledTripsSource.isCancellationMessage(message)) {
+			if (_cancelledTripsSource != null) {
+				_cancelledTripsSource.update(message, System.currentTimeMillis()); // the clock its expiry check uses
+			}
+			return; // a cancellation message carries no predictions
+		}
+
 		String tripId = null;
 		String vehicleId = null;
 		Map<String, Long> stopTimeMap = new HashMap<String, Long>();
@@ -172,8 +187,14 @@ public class QueuePredictionIntegrationServiceImpl extends
 				TimepointPredictionRecord tpr = new TimepointPredictionRecord();
 				// this validates the Agency_StopID convention
 				tpr.setTimepointId(AgencyAndIdLibrary.convertFromString(stu.getStopId()));
-				tpr.setTimepointPredictedArrivalTime(stu.getArrival().getTime());
-				tpr.setTimepointPredictedDepartureTime(stu.getDeparture().getTime());
+				if (stu.getScheduleRelationship() == StopTimeUpdate.ScheduleRelationship.SKIPPED) {
+					// the bus will not serve this stop; leave the times at the record's "unknown" (-1)
+					// rather than copying the unset protobuf fields, which read as 0, a 1970 arrival
+					tpr.setScheduleRealtionship(TimepointPredictionRecord.ScheduleRelationship.SKIPPED.getValue());
+				} else {
+					tpr.setTimepointPredictedArrivalTime(stu.getArrival().getTime());
+					tpr.setTimepointPredictedDepartureTime(stu.getDeparture().getTime());
+				}
 				tpr.setStopSequence(stu.getStopSequence()); // gtfs stop sequence
 				Long scheduledTime = stopTimeMap.get(stu.getStopId());
 

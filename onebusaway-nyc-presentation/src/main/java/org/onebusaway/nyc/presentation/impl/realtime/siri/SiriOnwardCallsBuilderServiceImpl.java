@@ -17,6 +17,7 @@
 package org.onebusaway.nyc.presentation.impl.realtime.siri;
 
 import org.onebusaway.nyc.presentation.impl.realtime.SiriSupportPredictionTimepointRecord;
+import org.onebusaway.nyc.presentation.impl.realtime.SkippedStopSupport;
 import org.onebusaway.nyc.presentation.impl.realtime.siri.builder.SiriOnwardCallBuilder;
 import org.onebusaway.nyc.presentation.service.realtime.PresentationService;
 import org.onebusaway.nyc.presentation.service.realtime.siri.SiriBuilderServiceHelper;
@@ -218,8 +219,9 @@ public class SiriOnwardCallsBuilderServiceImpl implements SiriOnwardCallsBuilder
         if (distanceOfCallAlongTrip < 100) isNearFirstStop = true;
 
         boolean isCancelledStop = changeType == StopChangeDiff.ChangeType.REMOVED;
+        boolean isSkippedStop = SkippedStopSupport.isSkipped(prediction);
 
-        if(prediction != null && !isCancelledStop) {
+        if(prediction != null && !isCancelledStop && !isSkippedStop) {
             if (prediction.getTimepointPredictionRecord().getTimepointPredictedArrivalTime() < responseTimestamp) {
                 if (!isNearFirstStop) { siriOnwardCallBuilder.setExpectedArrivalTime(new Date(responseTimestamp));}
                 else {
@@ -266,7 +268,11 @@ public class SiriOnwardCallsBuilderServiceImpl implements SiriOnwardCallsBuilder
         extensionsStructure.setAny(wrapper);
         siriOnwardCallBuilder.setExtensions(extensionsStructure);
 
-        return siriOnwardCallBuilder.build();
+        OnwardCallStructure onwardCall = siriOnwardCallBuilder.build();
+        if (isSkippedStop) {
+            SkippedStopSupport.markSkipped(onwardCall);
+        }
+        return onwardCall;
     }
 
 }

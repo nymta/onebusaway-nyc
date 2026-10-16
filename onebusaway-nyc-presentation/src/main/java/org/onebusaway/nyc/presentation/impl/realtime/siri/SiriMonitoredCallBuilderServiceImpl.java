@@ -18,6 +18,7 @@ package org.onebusaway.nyc.presentation.impl.realtime.siri;
 
 import org.onebusaway.gtfs.model.AgencyAndId;
 import org.onebusaway.nyc.presentation.impl.realtime.SiriSupportPredictionTimepointRecord;
+import org.onebusaway.nyc.presentation.impl.realtime.SkippedStopSupport;
 import org.onebusaway.nyc.presentation.impl.realtime.siri.builder.SiriMonitoredCallBuilder;
 import org.onebusaway.nyc.presentation.service.realtime.PresentationService;
 import org.onebusaway.nyc.presentation.service.realtime.siri.SiriBuilderServiceHelper;
@@ -232,7 +233,8 @@ public class SiriMonitoredCallBuilderServiceImpl implements SiriMonitoredCallBui
         stopPoint.setValue(stopBean.getName());
         siriMonitoredCallBuilder.setStopPointName(stopPoint);
 
-        if(prediction != null) {
+        boolean isSkippedStop = SkippedStopSupport.isSkipped(prediction);
+        if(prediction != null && !isSkippedStop) {
             fillExpectedArrivalDepartureTimes(siriMonitoredCallBuilder, prediction, responseTimestamp);
         }
 
@@ -285,7 +287,11 @@ public class SiriMonitoredCallBuilderServiceImpl implements SiriMonitoredCallBui
         anyExtensions.setAny(wrapper);
         siriMonitoredCallBuilder.setExtensions(anyExtensions);
 
-        return siriMonitoredCallBuilder.build();
+        MonitoredCallStructure monitoredCall = siriMonitoredCallBuilder.build();
+        if (isSkippedStop) {
+            SkippedStopSupport.markSkipped(monitoredCall);
+        }
+        return monitoredCall;
     }
 
     private void fillExpectedArrivalDepartureTimes(SiriMonitoredCallBuilder siriMonitoredCallBuilder,

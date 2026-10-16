@@ -20,6 +20,7 @@ import com.google.transit.realtime.GtfsRealtime.*;
 import org.junit.Before;
 import org.junit.Test;
 import org.onebusaway.gtfs.model.AgencyAndId;
+import org.onebusaway.nyc.gtfsrt.impl.TripUpdateFeedBuilderImpl;
 import org.onebusaway.nyc.gtfsrt.impl.TripUpdateServiceImpl;
 import org.onebusaway.nyc.gtfsrt.service.TripUpdateFeedBuilder;
 import org.onebusaway.nyc.gtfsrt.util.GtfsRealtimeLibrary;
@@ -73,6 +74,10 @@ public class TripUpdateServiceImplTest {
         TripStatusBean bean = new TripStatusBean();
         bean.setServiceDate(System.currentTimeMillis());
         return GtfsRealtimeLibrary.makeCanceledTrip(trip, bean, null);
+      }
+      @Override
+      public TripUpdate.Builder makeCanceledTrip(TripBean trip, CancelledTripBean cancelled) {
+        return new TripUpdateFeedBuilderImpl().makeCanceledTrip(trip, cancelled);
       }
     };
 
@@ -171,6 +176,47 @@ public class TripUpdateServiceImplTest {
     assertTrue(entities.size() == 1);
     assertEquals("trip1", entities.get(0).getId());  // note that agency doesn't come back
     assertEquals(TripDescriptor.ScheduleRelationship.CANCELED, entities.get(0).getTripUpdate().getTrip().getScheduleRelationship());
+  }
+
+  @Test
+  public void testCancelledCarriesItsOwnServiceDateAndSecondsTimestamp() {
+    CancelledTripBean cancelledTripBean = new CancelledTripBean();
+    cancelledTripBean.setTrip("1_trip1");
+    cancelledTripBean.setServiceDate("2022-01-21");
+    ListBean<CancelledTripBean> beans = new ListBean(new ArrayList<>(Arrays.asList(cancelledTripBean)), false);
+
+    VehicleStatusBean vsb = vehicleStatus("vehicle", "1_block", 1);
+    BlockInstanceBean block = blockInstance(blockTrip("1_trip0"), blockTripRoute("1_trip1", "1_route1"));
+    when(tds.getAllVehiclesForAgency("agency", 0)).thenReturn(UnitTestSupport.listBean(vsb));
+    when(tds.getBlockInstance("1_block", 0)).thenReturn(block);
+    when(tds.getAllCancelledTrips()).thenReturn(beans);
+    when(tds.getTrip("1_trip1")).thenReturn(blockTripRoute("1_trip1", "1_route1").getTrip());
+    List<FeedEntity.Builder> entities = service.getEntities(0);
+    assertEquals(1, entities.size());
+    TripUpdate tu = entities.get(0).getTripUpdate();
+    assertEquals(TripDescriptor.ScheduleRelationship.CANCELED, tu.getTrip().getScheduleRelationship());
+    assertEquals("the trip's own service date, not the build day", "20220121", tu.getTrip().getStartDate());
+    assertTrue("timestamp in seconds", tu.getTimestamp() < 10_000_000_000L);
+    assertTrue(tu.getTimestamp() > 1_600_000_000L);
+    assertEquals(0, tu.getStopTimeUpdateCount());
+  }
+
+  @Test
+  public void testUnCancelledTripLeavesTheFeed() {
+    CancelledTripBean cancelledTripBean = new CancelledTripBean();
+    cancelledTripBean.setTrip("1_trip1");
+    VehicleStatusBean vsb = vehicleStatus("vehicle", "1_block", 1);
+    BlockInstanceBean block = blockInstance(blockTrip("1_trip0"), blockTripRoute("1_trip1", "1_route1"));
+    when(tds.getAllVehiclesForAgency("agency", 0)).thenReturn(UnitTestSupport.listBean(vsb));
+    when(tds.getBlockInstance("1_block", 0)).thenReturn(block);
+    when(tds.getTrip("1_trip1")).thenReturn(blockTripRoute("1_trip1", "1_route1").getTrip());
+
+    when(tds.getAllCancelledTrips()).thenReturn(new ListBean(new ArrayList<>(Arrays.asList(cancelledTripBean)), false));
+    assertEquals(1, service.getEntities(0).size());
+
+    // the next cancelled-trip set no longer lists it: no CANCELED entity, and nothing else for a vehicle without predictions
+    when(tds.getAllCancelledTrips()).thenReturn(new ListBean(new ArrayList<CancelledTripBean>(), false));
+    assertTrue(service.getEntities(0).isEmpty());
   }
 
   private BlockTripBean blockTrip(String tripId) {

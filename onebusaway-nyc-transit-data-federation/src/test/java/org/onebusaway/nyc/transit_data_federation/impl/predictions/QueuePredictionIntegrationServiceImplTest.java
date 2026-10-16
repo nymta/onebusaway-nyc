@@ -115,6 +115,39 @@ public class QueuePredictionIntegrationServiceImplTest {
     assertEquals(1, record2.getTimepointPredictedArrivalTime());
   }
 
+  @Test
+  public void testSkippedStopKeepsRelationshipAndNoTimes() {
+    TripUpdate.Builder tu = getTripUpdate("trip1", "stop1");
+    tu.setStopTimeUpdate(0, TripUpdate.StopTimeUpdate.newBuilder()
+            .setStopId("1_stop1")
+            .setStopSequence(1)
+            .setScheduleRelationship(TripUpdate.StopTimeUpdate.ScheduleRelationship.SKIPPED));
+    FeedMessage msg = FeedMessage.newBuilder()
+            .addEntity(FeedEntity.newBuilder().setTripUpdate(tu).setId("trip1"))
+            .setHeader(FeedHeader.newBuilder().setGtfsRealtimeVersion("1.0").setTimestamp(1))
+            .build();
+    service.processResult(msg);
+
+    Collection<TimepointPredictionRecord> records = service.getPredictionRecordsForVehicleAndTrip("vehicle1", "trip1");
+    assertEquals(1, records.size());
+    TimepointPredictionRecord record = records.iterator().next();
+    assertTrue(record.isSkipped());
+    assertEquals(-1, record.getTimepointPredictedArrivalTime());
+    assertEquals(-1, record.getTimepointPredictedDepartureTime());
+    assertTrue(service.getPredictionRecordsForVehicleAndTripByStopId("vehicle1", "trip1").get("1_stop1").isSkipped());
+  }
+
+  @Test
+  public void testScheduledStopIsNotSkipped() {
+    FeedMessage msg = FeedMessage.newBuilder()
+            .addEntity(FeedEntity.newBuilder().setTripUpdate(getTripUpdate("trip1", "stop1")).setId("trip1"))
+            .setHeader(FeedHeader.newBuilder().setGtfsRealtimeVersion("1.0").setTimestamp(1))
+            .build();
+    service.processResult(msg);
+
+    assertFalse(service.getPredictionRecordsForVehicleAndTrip("vehicle1", "trip1").iterator().next().isSkipped());
+  }
+
   private TripUpdate.Builder getTripUpdate(String tripId, String stopId) {
     return TripUpdate.newBuilder()
             .setTrip(TripDescriptor.newBuilder().setTripId(tripId))

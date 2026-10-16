@@ -85,7 +85,7 @@ public class GtfsRealtimeLibrary {
     public static TripUpdate.Builder makeCanceledTrip(TripBean tb, TripStatusBean bean, TripModificationDiff tripModificationDiff) {
         TripUpdate.Builder tripUpdate = TripUpdate.newBuilder();
         tripUpdate.setTrip(makeCanceledTripDescriptor(tb, bean, tripModificationDiff));
-        tripUpdate.setTimestamp(System.currentTimeMillis());
+        tripUpdate.setTimestamp(System.currentTimeMillis() / 1000L); // GTFS-RT timestamps are POSIX seconds
         return tripUpdate;
     }
 
