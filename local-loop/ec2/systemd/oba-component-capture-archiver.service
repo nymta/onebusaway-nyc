@@ -1,0 +1,8 @@
+[Unit]
+Description=OBA-NYC component-capture CSV archiver (closed files -> S3, hourly)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=oba
+ExecStart=/opt/oba/run-component-capture-archiver.sh

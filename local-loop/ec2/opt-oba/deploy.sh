@@ -43,6 +43,11 @@ case "$ACTION" in
     install -m 755 "$SRC/opt-oba/predictions-archiver.py" /opt/oba/predictions-archiver.py
     install -m 755 "$SRC/opt-oba/run-predictions-archiver.sh" /opt/oba/run-predictions-archiver.sh
     install -m 644 "$SRC/systemd/oba-predictions-archiver.service" /etc/systemd/system/oba-predictions-archiver.service
+    echo "== install component-capture archiver =="
+    install -m 755 "$SRC/opt-oba/component-capture-archiver.py" /opt/oba/component-capture-archiver.py
+    install -m 755 "$SRC/opt-oba/run-component-capture-archiver.sh" /opt/oba/run-component-capture-archiver.sh
+    install -m 644 "$SRC/systemd/oba-component-capture-archiver.service" /etc/systemd/system/oba-component-capture-archiver.service
+    install -m 644 "$SRC/systemd/oba-component-capture-archiver.timer" /etc/systemd/system/oba-component-capture-archiver.timer
     echo "== predictions archiver host prereqs =="
     mkdir -p /data/predictions-archive
     chown oba:oba /data/predictions-archive
@@ -63,6 +68,9 @@ case "$ACTION" in
     # stays installed but inert -- enabling it would just retry a connection that always times out.
     CSPUB=$( [ -f /opt/oba/env-local.sh ] && ( . /opt/oba/env-local.sh; echo "${OBA_CSPUB_ENABLED:-0}" ) || echo 0 )
     if [ "$CSPUB" = "1" ]; then systemctl enable oba-cs-gps-publisher.service; else systemctl disable oba-cs-gps-publisher.service 2>/dev/null || true; fi
+    # Component capture is opt-in per host via OBA_COMPONENT_CAPTURE_FILE in env-local.sh (read by run-predictions.sh).
+    CAPTURE=$( [ -f /opt/oba/env-local.sh ] && ( . /opt/oba/env-local.sh; echo "${OBA_COMPONENT_CAPTURE_FILE-}" ) || true )
+    if [ -n "$CAPTURE" ]; then systemctl enable --now oba-component-capture-archiver.timer; else systemctl disable --now oba-component-capture-archiver.timer 2>/dev/null || true; fi
     echo "== restart services =="
     systemctl restart oba-broker oba-inference oba-predictions oba-gtfsrt oba-predictions-archiver
     [ "$CSPUB" = "1" ] && systemctl restart oba-cs-gps-publisher

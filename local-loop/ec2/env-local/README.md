@@ -17,6 +17,7 @@ No secrets here — RabbitMQ and S3 credentials come from SSM Parameter Store at
 | `oba-nyc-prod.sh` | `i-0386b6bb8338b2f67` | `nyct.bustech.gps` | 10 m / 7 s / 30 s (defaults) | `v1/` |
 | `oba-nyc-filtered.sh` | `i-0d78f39b83d961f5c` | `nyct.bustech.gps-filtered` | **off** (pre-filtered upstream) | `v3-filtered/` |
 | `oba-nyc-fused-gps.sh` | `i-0a45277b7b11ea8be` | `nyct.bus.fused-gps` | 10 m / 7 s / 30 s (explicit) | `v4-fused-gps/` |
+| `oba-nyc-bias-correction.sh` | `i-0a0d51b7c668935d1` | `nyct.bustech.gps-filtered` | **off** (as filtered) | `v6-bias-correction/` |
 
 ## Check an instance against its tracked config
 
