@@ -178,24 +178,37 @@ public abstract class AbstractFeedMessageService implements FeedMessageService {
     }
 
     public Collection<VehicleStatusBean> getAllVehicles(TransitDataService tds, PresentationService ps, long time) {
+        return filterDisplayedVehicles(tds, ps, getAllVehicleStatuses(tds, time), time);
+    }
+
+    /** Every vehicle the TDS knows, before the display filter. */
+    public List<VehicleStatusBean> getAllVehicleStatuses(TransitDataService tds, long time) {
         List<VehicleStatusBean> vehicles = new ArrayList<VehicleStatusBean>();
-        int nStale = 0;
         for (AgencyWithCoverageBean bean : tds.getAgenciesWithCoverage()) {
             String agency = bean.getAgency().getId();
             ListBean<VehicleStatusBean> lb = tds.getAllVehiclesForAgency(agency, time);
-            for (VehicleStatusBean vsb : lb.getList()) {
-                if (isStale(vsb, time)) {
-                    nStale++;
-                } else if (includeVehicle(tds, ps, vsb, time)) {
-                    vehicles.add(vsb);
-                }
+            vehicles.addAll(lb.getList());
+        }
+        return vehicles;
+    }
+
+    /** The vehicles to publish: not stale and accepted by the presentation service. */
+    public List<VehicleStatusBean> filterDisplayedVehicles(TransitDataService tds, PresentationService ps,
+                                                           Collection<VehicleStatusBean> vehicles, long time) {
+        List<VehicleStatusBean> displayed = new ArrayList<VehicleStatusBean>();
+        int nStale = 0;
+        for (VehicleStatusBean vsb : vehicles) {
+            if (isStale(vsb, time)) {
+                nStale++;
+            } else if (includeVehicle(tds, ps, vsb, time)) {
+                displayed.add(vsb);
             }
         }
         if (nStale > 0) {
             _log.info("{}: omitted {} vehicle(s) with an update older than {} s",
                     getClass().getSimpleName(), nStale, _maxVehicleAgeMillis / 1000);
         }
-        return vehicles;
+        return displayed;
     }
 
     /**

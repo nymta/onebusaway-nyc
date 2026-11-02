@@ -10,5 +10,6 @@ exec mvn -B -P local-ie-testing -DskipTests -Dlicense.skip=true \
   -Dbundle.location="$BUNDLE" -Dbundle.mode.standalone=true -Dtdm.host= \
   -Dorg.onebusaway.nyc.tdm.bundle.batchmode=true \
   -Doba.feed.maxVehicleAgeSec=120 \
+  -Doba.gtfsrt.cancelUnmatchedTrips="${OBA_GTFSRT_CANCEL_UNMATCHED:-false}" \
   -Djetty.http.port=8083 \
   "$JETTY"

@@ -36,4 +36,7 @@ public interface TripUpdateFeedBuilder {
                                                    Collection<TimepointPredictionRecord> records);
 
     GtfsRealtime.TripUpdate.Builder makeCanceledTrip(TripBean trip);
+
+    /** As makeCanceledTrip(trip), but dated to the given service date (epoch ms) instead of now. */
+    GtfsRealtime.TripUpdate.Builder makeCanceledTrip(TripBean trip, long serviceDate);
 }

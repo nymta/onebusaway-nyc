@@ -88,6 +88,17 @@
         <property name="targetMethod" value="updateConfigurationMap"/>
         <property name="arguments"><list><value>display.useTimePredictions</value><value>true</value></list></property>
     </bean>
+    <!-- CS's value; also the staleness limit for counting a vehicle as matched to a trip -->
+    <bean id="displayHideTimeout" class="org.springframework.beans.factory.config.MethodInvokingFactoryBean">
+        <property name="targetObject" ref="configurationService"/>
+        <property name="targetMethod" value="updateConfigurationMap"/>
+        <property name="arguments"><list><value>display.hideTimeout</value><value>120</value></list></property>
+    </bean>
+    <bean id="gtfsrtCancelUnmatchedTrips" class="org.springframework.beans.factory.config.MethodInvokingFactoryBean">
+        <property name="targetObject" ref="configurationService"/>
+        <property name="targetMethod" value="updateConfigurationMap"/>
+        <property name="arguments"><list><value>gtfsrt.cancelUnmatchedTrips.enabled</value><value>${oba.gtfsrt.cancelUnmatchedTrips}</value></list></property>
+    </bean>
 
     <!-- Input Queue Configuration -->
     <bean id="inferenceInputQueue"

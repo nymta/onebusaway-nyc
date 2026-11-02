@@ -21,6 +21,8 @@ import org.junit.Before;
 import org.junit.Test;
 import org.onebusaway.gtfs.model.AgencyAndId;
 import org.onebusaway.nyc.gtfsrt.impl.TripUpdateServiceImpl;
+import org.onebusaway.nyc.gtfsrt.service.ScheduledTripCancellationService;
+import org.onebusaway.nyc.gtfsrt.service.ScheduledTripCancellationService.TripToCancel;
 import org.onebusaway.nyc.gtfsrt.service.TripUpdateFeedBuilder;
 import org.onebusaway.nyc.gtfsrt.util.GtfsRealtimeLibrary;
 import org.onebusaway.nyc.presentation.service.realtime.PresentationService;
@@ -70,8 +72,13 @@ public class TripUpdateServiceImplTest {
 
       @Override
       public TripUpdate.Builder makeCanceledTrip(TripBean trip) {
+        return makeCanceledTrip(trip, System.currentTimeMillis());
+      }
+
+      @Override
+      public TripUpdate.Builder makeCanceledTrip(TripBean trip, long serviceDate) {
         TripStatusBean bean = new TripStatusBean();
-        bean.setServiceDate(System.currentTimeMillis());
+        bean.setServiceDate(serviceDate);
         return GtfsRealtimeLibrary.makeCanceledTrip(trip, bean, null);
       }
     };
@@ -171,6 +178,93 @@ public class TripUpdateServiceImplTest {
     assertTrue(entities.size() == 1);
     assertEquals("trip1", entities.get(0).getId());  // note that agency doesn't come back
     assertEquals(TripDescriptor.ScheduleRelationship.CANCELED, entities.get(0).getTripUpdate().getTrip().getScheduleRelationship());
+  }
+
+  /** Records the matched trips it is given and cancels a fixed list. */
+  private static class FakeCancellationService implements ScheduledTripCancellationService {
+    Map<String, Set<String>> matchedTripIdsByVehicle;
+    Set<String> excludedTripIds;
+    final List<TripToCancel> toCancel = new ArrayList<>();
+
+    @Override
+    public List<TripToCancel> getTripsToCancel(long time, Map<String, Set<String>> matchedTripIdsByVehicle,
+                                               Set<String> excludedTripIds) {
+      this.matchedTripIdsByVehicle = new HashMap<>(matchedTripIdsByVehicle);
+      this.excludedTripIds = new HashSet<>(excludedTripIds);
+      return toCancel;
+    }
+  }
+
+  @Test
+  public void testUnmatchedScheduledTripIsCancelledForItsServiceDate() {
+    FakeCancellationService cancellations = new FakeCancellationService();
+    long serviceDate = 1790222400000L; // 2026-09-24 00:00 ET
+    cancellations.toCancel.add(new TripToCancel("1_trip5", serviceDate));
+    service.setScheduledTripCancellationService(cancellations);
+    when(tds.getAllVehiclesForAgency("agency", 0)).thenReturn(UnitTestSupport.listBean());
+    when(tds.getTrip("1_trip5")).thenReturn(blockTripRoute("1_trip5", "1_route1").getTrip());
+
+    List<FeedEntity.Builder> entities = service.getEntities(0);
+
+    assertEquals(1, entities.size());
+    assertEquals("trip5", entities.get(0).getId());
+    TripDescriptor trip = entities.get(0).getTripUpdate().getTrip();
+    assertEquals(TripDescriptor.ScheduleRelationship.CANCELED, trip.getScheduleRelationship());
+    assertEquals("20260924", trip.getStartDate());
+  }
+
+  private FakeCancellationService matchedTripsFor(VehicleStatusBean vsb, long time) {
+    FakeCancellationService cancellations = new FakeCancellationService();
+    service.setScheduledTripCancellationService(cancellations);
+    when(tds.getAllVehiclesForAgency("agency", time)).thenReturn(UnitTestSupport.listBean(vsb));
+    when(tds.getBlockInstance("1_block", 0)).thenReturn(
+            blockInstance(blockTrip("1_trip0"), blockTrip("1_trip1"), blockTrip("1_trip2")));
+    service.getEntities(time);
+    return cancellations;
+  }
+
+  @Test
+  public void testVehicleMatchedToCurrentAndNextTripAndExternalCancellationsExcluded() {
+    CancelledTripBean external = new CancelledTripBean();
+    external.setTrip("1_tripX");
+    when(tds.getAllCancelledTrips()).thenReturn(new ListBean<CancelledTripBean>(Collections.singletonList(external), false));
+
+    FakeCancellationService cancellations = matchedTripsFor(vehicleStatus("vehicle", "1_block", 0), 0);
+
+    assertEquals(Collections.singletonMap("vehicle", new HashSet<>(Arrays.asList("1_trip0", "1_trip1"))),
+            cancellations.matchedTripIdsByVehicle);
+    assertEquals(Collections.singleton("1_tripX"), cancellations.excludedTripIds);
+  }
+
+  @Test
+  public void testVehicleHiddenFromDisplayStillCountsAsMatched() {
+    when(presentationService.include(any(TripStatusBean.class))).thenReturn(Boolean.FALSE); // e.g. deadheading
+
+    FakeCancellationService cancellations = matchedTripsFor(vehicleStatus("vehicle", "1_block", 0), 0);
+
+    assertEquals(Collections.singletonMap("vehicle", new HashSet<>(Arrays.asList("1_trip0", "1_trip1"))),
+            cancellations.matchedTripIdsByVehicle);
+  }
+
+  @Test
+  public void testStaleVehicleDoesNotCountAsMatched() {
+    FakeCancellationService cancellations = matchedTripsFor(vehicleStatus("vehicle", "1_block", 0), 300 * 1000L);
+
+    assertTrue(cancellations.matchedTripIdsByVehicle.isEmpty());
+  }
+
+  @Test
+  public void testFeedUnchangedWithoutCancellationService() {
+    VehicleStatusBean vsb = vehicleStatus("vehicle", "block", 0);
+    when(tds.getAllVehiclesForAgency("agency", 0)).thenReturn(UnitTestSupport.listBean(vsb));
+    when(tds.getBlockInstance("block", 0)).thenReturn(blockInstance(blockTrip("MTA_trip")));
+    when(tds.getPredictionRecordsForVehicleAndTripByStopId("vehicle", "MTA_trip"))
+            .thenReturn(Collections.singletonMap("stop", tpr("stop", 0, 0)));
+
+    List<FeedEntity.Builder> ret = service.getEntities(0);
+
+    assertEquals(1, ret.size());
+    assertTrip("MTA_trip", ret.get(0));
   }
 
   private BlockTripBean blockTrip(String tripId) {
