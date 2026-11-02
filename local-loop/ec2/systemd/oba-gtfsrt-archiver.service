@@ -1,0 +1,13 @@
+[Unit]
+Description=OBA-NYC GTFS-RT S3 archiver (:8083 tripUpdates/vehiclePositions -> gtfsrt hourly zips)
+After=network-online.target oba-gtfsrt.service
+Wants=network-online.target
+
+[Service]
+User=oba
+ExecStart=/opt/oba/run-gtfsrt-archiver.sh
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target
