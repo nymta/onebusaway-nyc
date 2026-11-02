@@ -153,17 +153,29 @@ public abstract class AbstractFeedMessageService implements FeedMessageService {
     }
 
     public Collection<VehicleStatusBean> getAllVehicles(TransitDataService tds, PresentationService ps, long time) {
+        return filterDisplayedVehicles(tds, ps, getAllVehicleStatuses(tds, time), time);
+    }
+
+    /** Every vehicle the TDS knows, before the display filter. */
+    public List<VehicleStatusBean> getAllVehicleStatuses(TransitDataService tds, long time) {
         List<VehicleStatusBean> vehicles = new ArrayList<VehicleStatusBean>();
         for (AgencyWithCoverageBean bean : tds.getAgenciesWithCoverage()) {
             String agency = bean.getAgency().getId();
             ListBean<VehicleStatusBean> lb = tds.getAllVehiclesForAgency(agency, time);
-            for (VehicleStatusBean vsb : lb.getList()) {
-                if (includeVehicle(tds, ps, vsb, time)) {
-                    vehicles.add(vsb);
-                }
-            }
+            vehicles.addAll(lb.getList());
         }
         return vehicles;
+    }
+
+    public List<VehicleStatusBean> filterDisplayedVehicles(TransitDataService tds, PresentationService ps,
+                                                           Collection<VehicleStatusBean> vehicles, long time) {
+        List<VehicleStatusBean> displayed = new ArrayList<VehicleStatusBean>();
+        for (VehicleStatusBean vsb : vehicles) {
+            if (includeVehicle(tds, ps, vsb, time)) {
+                displayed.add(vsb);
+            }
+        }
+        return displayed;
     }
 
     public boolean includeVehicle(TransitDataService tds, PresentationService presentationService,

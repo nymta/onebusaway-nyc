@@ -124,8 +124,13 @@ public class  TripUpdateFeedBuilderImpl implements TripUpdateFeedBuilder {
 
     @Override
     public GtfsRealtime.TripUpdate.Builder makeCanceledTrip(TripBean trip) {
+        return makeCanceledTrip(trip, System.currentTimeMillis());
+    }
+
+    @Override
+    public GtfsRealtime.TripUpdate.Builder makeCanceledTrip(TripBean trip, long serviceDate) {
         TripStatusBean empty = new TripStatusBean();
-        empty.setServiceDate(System.currentTimeMillis());
+        empty.setServiceDate(serviceDate);
         return GtfsRealtimeLibrary.makeCanceledTrip(trip, empty, null);
     }
 

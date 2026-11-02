@@ -20,9 +20,12 @@ import com.google.common.cache.CacheBuilder;
 import com.google.transit.realtime.GtfsRealtime;
 import com.google.transit.realtime.GtfsRealtime.FeedEntity;
 import org.onebusaway.gtfs.model.AgencyAndId;
+import org.onebusaway.nyc.gtfsrt.service.ScheduledTripCancellationService;
+import org.onebusaway.nyc.gtfsrt.service.ScheduledTripCancellationService.TripToCancel;
 import org.onebusaway.nyc.gtfsrt.service.TripUpdateFeedBuilder;
 import org.onebusaway.nyc.presentation.service.realtime.PresentationService;
 import org.onebusaway.nyc.transit_data.services.NycTransitDataService;
+import org.onebusaway.nyc.util.configuration.ConfigurationService;
 import org.onebusaway.realtime.api.EVehiclePhase;
 import org.onebusaway.realtime.api.TimepointPredictionRecord;
 import org.onebusaway.transit_data.model.ListBean;
@@ -78,6 +81,21 @@ public class TripUpdateServiceImpl extends AbstractFeedMessageService {
         _presentationService = presentationService;
     }
 
+    private static final int DEFAULT_HIDE_TIMEOUT_SECONDS = 300; // as PresentationServiceImpl
+
+    private ScheduledTripCancellationService _scheduledTripCancellationService;
+    private ConfigurationService _configurationService;
+
+    @Autowired(required = false)
+    public void setScheduledTripCancellationService(ScheduledTripCancellationService scheduledTripCancellationService) {
+        _scheduledTripCancellationService = scheduledTripCancellationService;
+    }
+
+    @Autowired(required = false)
+    public void setConfigurationService(ConfigurationService configurationService) {
+        _configurationService = configurationService;
+    }
+
     private Cache<String, BlockInstanceBean> _blockCache = CacheBuilder.newBuilder()
             .maximumSize(10000)
             .expireAfterWrite(60, TimeUnit.MINUTES)
@@ -101,10 +119,12 @@ public class TripUpdateServiceImpl extends AbstractFeedMessageService {
 
         List<CancelledTripBean> allCancelledTrips = getAllCanceledTrips();
 
-        Collection<VehicleStatusBean> vehicles = getAllVehicles(_transitDataService, _presentationService, time);
+        List<VehicleStatusBean> allVehicles = getAllVehicleStatuses(_transitDataService, time);
+        Collection<VehicleStatusBean> vehicles = filterDisplayedVehicles(_transitDataService, _presentationService, allVehicles, time);
         Set<String> cancelledTripIds = getCanceledTripIds(allCancelledTrips);
         _log.debug("found " + vehicles.size() + " vehicles");
         List<FeedEntity.Builder> entities = new ArrayList<FeedEntity.Builder>();
+        Map<String, Set<String>> matchedTripIdsByVehicle = getMatchedTripIdsByVehicle(allVehicles, time);
 
         for (VehicleStatusBean vehicle : vehicles) {
             boolean isSpookingVehicle = vehicle != null
@@ -119,6 +139,7 @@ public class TripUpdateServiceImpl extends AbstractFeedMessageService {
         }
 
         addCanceledTripEntities(entities, allCancelledTrips);
+        addUnmatchedScheduledTripEntities(entities, time, matchedTripIdsByVehicle, cancelledTripIds);
 
         _log.debug("returning " + entities.size() + " entities");
         return entities;
@@ -130,13 +151,73 @@ public class TripUpdateServiceImpl extends AbstractFeedMessageService {
             // and send schedule relationship CANCELED
             TripBean tripBean = getBeanForTrip(bean.getTrip());
             if (tripBean != null) {
-                GtfsRealtime.TripUpdate.Builder tu = _feedBuilder.makeCanceledTrip(tripBean);
-                FeedEntity.Builder entity = FeedEntity.newBuilder();
-                entity.setTripUpdate(tu);
-                entity.setId(tu.getTrip().getTripId());
-                entities.add(entity);
+                addEntity(entities, _feedBuilder.makeCanceledTrip(tripBean));
             } else {
                 _log.warn("no trip for id " + bean.getTrip());
+            }
+        }
+    }
+
+    private void addEntity(List<FeedEntity.Builder> entities, GtfsRealtime.TripUpdate.Builder tu) {
+        FeedEntity.Builder entity = FeedEntity.newBuilder();
+        entity.setTripUpdate(tu);
+        entity.setId(tu.getTrip().getTripId());
+        entities.add(entity);
+    }
+
+    // Any phase counts (deadheads included, though the display filter hides them); only stale records do not.
+    private Map<String, Set<String>> getMatchedTripIdsByVehicle(List<VehicleStatusBean> allVehicles, long time) {
+        Map<String, Set<String>> matchedTripIdsByVehicle = new HashMap<>();
+        long staleMillis = 1000L * (_configurationService == null ? DEFAULT_HIDE_TIMEOUT_SECONDS
+                : _configurationService.getConfigurationValueAsInteger("display.hideTimeout", DEFAULT_HIDE_TIMEOUT_SECONDS));
+        for (VehicleStatusBean vehicle : allVehicles) {
+            if (vehicle != null && vehicle.getVehicleId() != null && vehicle.getTrip() != null
+                    && vehicle.getTripStatus() != null
+                    && time - vehicle.getTripStatus().getLastUpdateTime() < staleMillis) {
+                Set<String> matchedTripIds = new HashSet<>();
+                addMatchedTripIds(vehicle, matchedTripIds);
+                matchedTripIdsByVehicle.put(vehicle.getVehicleId(), matchedTripIds);
+            }
+        }
+        return matchedTripIdsByVehicle;
+    }
+
+    // A vehicle is matched to its current trip and the next trip of its block.
+    private void addMatchedTripIds(VehicleStatusBean vehicle, Set<String> matchedTripIds) {
+        if (vehicle.getTrip().getId() != null) {
+            matchedTripIds.add(vehicle.getTrip().getId());
+        }
+        try {
+            List<BlockTripBean> trips = getBlock(vehicle).getBlockConfiguration().getTrips();
+            int current = Math.max(0, vehicle.getTripStatus().getBlockTripSequence());
+            for (int i = current; i < Math.min(current + 2, trips.size()); i++) {
+                matchedTripIds.add(trips.get(i).getTrip().getId());
+            }
+        } catch (RuntimeException e) {
+            _log.warn("could not read block trips for vehicle " + vehicle.getVehicleId(), e);
+        }
+    }
+
+    private void addUnmatchedScheduledTripEntities(List<FeedEntity.Builder> entities, long time,
+                                                   Map<String, Set<String>> matchedTripIdsByVehicle,
+                                                   Set<String> cancelledTripIds) {
+        if (_scheduledTripCancellationService == null) {
+            return;
+        }
+        List<TripToCancel> tripsToCancel;
+        try {
+            tripsToCancel = _scheduledTripCancellationService.getTripsToCancel(time, matchedTripIdsByVehicle,
+                    cancelledTripIds);
+        } catch (RuntimeException e) {
+            _log.error("unmatched scheduled trip cancellation failed; feed published without it", e);
+            return;
+        }
+        for (TripToCancel tripToCancel : tripsToCancel) {
+            TripBean tripBean = getBeanForTrip(tripToCancel.getTripId());
+            if (tripBean != null) {
+                addEntity(entities, _feedBuilder.makeCanceledTrip(tripBean, tripToCancel.getServiceDate()));
+            } else {
+                _log.warn("no trip for id " + tripToCancel.getTripId());
             }
         }
     }
