@@ -18,6 +18,12 @@ matched_trips_gtfs_stif.csv
 non_pullin_without_next_movement.csv
 route_ids_with_no_trips.csv
 stif_trips_without_pullout.csv
+gtfs_and_stif_without_name_match.csv
+gtfs_trips_matched_with_multiple_stif_trips.csv
+incorrect_gtfs_stif_mismatches_by_Service_Id.csv
+non-revenue_gtfs_stoptimes_updated.csv
+stif_gtfs_stoptime_mismatch.csv
+trips_with_failed_stif_to_gtfs_stop_id_matching.csv
 *.iml
 *.iws
 .idea

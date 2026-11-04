@@ -1,0 +1,15 @@
+[Unit]
+Description=Bus Trek live snapshot archiver (mtabustrekdataexports bustrek-digital-services -> ds-oba bustrek-live/)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=oba
+# optional OBA_SNAP_* overrides (see run-snapshot-archiver.sh)
+EnvironmentFile=-/etc/default/oba-bustrek-live-archiver
+ExecStart=/opt/oba/run-snapshot-archiver.sh bustrek
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

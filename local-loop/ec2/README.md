@@ -15,12 +15,13 @@ live only in `~oba/.ssh` on the host and are deliberately excluded.
 | `opt-oba/env-common.sh` | `/opt/oba/env-common.sh` | shared env + `gp()` (SSM param fetch) |
 | `opt-oba/run-{broker,inference,predictions,gtfsrt,predictions-archiver}.sh` | `/opt/oba/` | service launchers (invoked by the systemd units) |
 | `opt-oba/predictions-archiver.py` | `/opt/oba/predictions-archiver.py` | ZMQ :5568 → hourly `queuePredictions_*.zip` → S3 |
+| `opt-oba/run-snapshot-archiver.sh` | `/opt/oba/run-snapshot-archiver.sh` | Bus Trek / Yard Trek live snapshot → `ds-oba …/dispatcher-actions/<name>-live/` (units `oba-{bustrek,yardtrek}-live-archiver`, optional overrides in `/etc/default/<unit>`; see `../DISPATCHER-ACTIONS-CHANGES.md`) |
 | `opt-oba/cs-gps-publisher.py` | `/opt/oba/cs-gps-publisher.py` | ZMQ :5564 → RabbitMQ `nyct.bustech.gps-filtered` (opt-in; see below) |
 | `opt-oba/run-cs-gps-publisher.sh` | `/opt/oba/run-cs-gps-publisher.sh` | launcher for the above |
 | `opt-oba/set-weights.sh` | `/opt/oba/set-weights.sh` | reads SSM `/oba/predictions/weights`, POSTs `/api/weight` |
 | `opt-oba/deploy.sh` | `/opt/oba/deploy.sh` | GitHub-Action target (modes `deploy` / `set-weights`) |
 | `opt-oba/monitor.sh` | `/opt/oba/monitor.sh` | emits `OBA/Prod` CloudWatch metrics (run by the timer) |
-| `systemd/oba-*.service`, `oba-monitor.timer` | `/etc/systemd/system/` | units (Restart=always; ordered broker→inference→predictions→gtfsrt→archiver) |
+| `systemd/oba-*.service`, `oba-monitor.timer` | `/etc/systemd/system/` | units (Restart=always; ordered broker→inference→predictions→gtfsrt→archiver; the two `*-live-archiver` units are independent) |
 | `nginx/nginx.conf` | `/etc/nginx/nginx.conf` | minimal http config (no stock server) |
 | `nginx/conf.d/oba-gtfsrt.conf` | `/etc/nginx/conf.d/oba-gtfsrt.conf` | GET-only allowlist reverse proxy (:80 → :8083) |
 | `bundle/bundle-wholeMTA.xml` | `/data/bundle-src/wholeMTA/bundle-wholeMTA.xml` | whole-MTA bundle-builder config (6 GTFS + NYCT STIF) |

@@ -1,0 +1,15 @@
+[Unit]
+Description=Yard Trek live snapshot archiver (yardtrek-digital-services -> ds-oba yardtrek-live/)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=oba
+# optional OBA_SNAP_* overrides (see run-snapshot-archiver.sh)
+EnvironmentFile=-/etc/default/oba-yardtrek-live-archiver
+ExecStart=/opt/oba/run-snapshot-archiver.sh yardtrek
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target
