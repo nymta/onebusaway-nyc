@@ -1,18 +1,3 @@
-/**
- * Copyright (C) 2026 Metropolitan Transportation Authority
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *         http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
 package org.onebusaway.nyc.gtfsrt.tests;
 
 import static org.junit.Assert.assertEquals;
@@ -29,7 +14,6 @@ import java.io.FileInputStream;
 import java.io.InputStream;
 import java.io.PrintWriter;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -39,22 +23,15 @@ import java.util.TreeMap;
 
 import org.junit.Assume;
 import org.junit.Test;
-import org.mockito.invocation.InvocationOnMock;
-import org.mockito.stubbing.Answer;
 import org.onebusaway.nyc.gtfsrt.impl.TripUpdateFeedBuilderImpl;
 import org.onebusaway.nyc.gtfsrt.impl.TripUpdateServiceImpl;
-import org.onebusaway.nyc.gtfsrt.service.TripUpdateFeedBuilder;
-import org.onebusaway.nyc.gtfsrt.util.GtfsRealtimeLibrary;
 import org.onebusaway.nyc.presentation.service.realtime.PresentationService;
 import org.onebusaway.nyc.transit_data.services.NycTransitDataService;
 import org.onebusaway.nyc.transit_data_federation.impl.predictions.PredictionCancelledTripsSource;
 import org.onebusaway.nyc.util.configuration.ConfigurationService;
-import org.onebusaway.realtime.api.TimepointPredictionRecord;
 import org.onebusaway.transit_data.model.ListBean;
 import org.onebusaway.transit_data.model.RouteBean;
 import org.onebusaway.transit_data.model.VehicleStatusBean;
-import org.onebusaway.transit_data.model.trip_mods.TripModificationDiff;
-import org.onebusaway.transit_data.model.trips.CancelledTripBean;
 import org.onebusaway.transit_data.model.trips.TripBean;
 import org.onebusaway.transit_data.model.trips.TripDetailsBean;
 import org.onebusaway.transit_data.model.trips.TripForVehicleQueryBean;
@@ -101,30 +78,23 @@ public class RecordedCancellationFeedTest {
     when(tds.getTripDetailsForVehicleAndTime(any(TripForVehicleQueryBean.class))).thenReturn(new TripDetailsBean());
     when(tds.getAllVehiclesForAgency(anyString(), anyLong())).thenReturn(
         new ListBean<VehicleStatusBean>(new ArrayList<VehicleStatusBean>(), false));
-    final CancelledTripServiceImpl realService = cancelledTrips;
-    when(tds.getAllCancelledTrips()).thenAnswer(new Answer<Object>() {
-      public Object answer(InvocationOnMock invocation) {
-        return realService.getAllCancelledTrips();
-      }
-    });
-    when(tds.getTrip(anyString())).thenAnswer(new Answer<TripBean>() {
-      public TripBean answer(InvocationOnMock invocation) {
-        String id = (String) invocation.getArguments()[0];
-        TripBean trip = new TripBean();
-        trip.setId(id);
-        RouteBean.Builder route = RouteBean.builder();
-        route.setId(routeOfTrip.containsKey(id) ? routeOfTrip.get(id) : "MTA NYCT_?");
-        trip.setRoute(route.create());
-        trip.setDirectionId(directionOfTrip.containsKey(id) ? directionOfTrip.get(id) : "0");
-        return trip;
-      }
+    when(tds.getAllCancelledTrips()).thenAnswer(invocation -> cancelledTrips.getAllCancelledTrips());
+    when(tds.getTrip(anyString())).thenAnswer(invocation -> {
+      String id = (String) invocation.getArguments()[0];
+      TripBean trip = new TripBean();
+      trip.setId(id);
+      RouteBean.Builder route = RouteBean.builder();
+      route.setId(routeOfTrip.getOrDefault(id, "MTA NYCT_?"));
+      trip.setRoute(route.create());
+      trip.setDirectionId(directionOfTrip.getOrDefault(id, "0"));
+      return trip;
     });
     PresentationService presentation = mock(PresentationService.class);
     when(presentation.include(any(TripStatusBean.class))).thenReturn(Boolean.TRUE);
     doNothing().when(presentation).setTime(any(Long.class));
 
     TripUpdateServiceImpl service = new TripUpdateServiceImpl();
-    service.setFeedBuilder(feedBuilder());
+    service.setFeedBuilder(new TripUpdateFeedBuilderImpl()); // only its cancelled-trip path is reached: no vehicles
     service.setTransitDataService(tds);
     service.setPresentationService(presentation);
 
@@ -226,24 +196,5 @@ public class RecordedCancellationFeedTest {
       keys.add(bare(tu.getTrip().getTripId()) + "@" + tu.getTrip().getStartDate());
     }
     return keys;
-  }
-
-  private static TripUpdateFeedBuilder feedBuilder() {
-    return new TripUpdateFeedBuilder() {
-      public TripUpdate.Builder makeTripUpdate(TripBean trip, VehicleStatusBean vehicle, Collection<TimepointPredictionRecord> records, TripModificationDiff diff) {
-        return TripUpdate.newBuilder().setTrip(TripDescriptor.newBuilder().setTripId(trip.getId()));
-      }
-      public TripUpdate.Builder makeTripUpdate(TripBean trip, VehicleStatusBean vehicle, Collection<TimepointPredictionRecord> records) {
-        return TripUpdate.newBuilder().setTrip(TripDescriptor.newBuilder().setTripId(trip.getId()));
-      }
-      public TripUpdate.Builder makeCanceledTrip(TripBean trip) {
-        TripStatusBean bean = new TripStatusBean();
-        bean.setServiceDate(System.currentTimeMillis());
-        return GtfsRealtimeLibrary.makeCanceledTrip(trip, bean, null);
-      }
-      public TripUpdate.Builder makeCanceledTrip(TripBean trip, CancelledTripBean cancelled) {
-        return new TripUpdateFeedBuilderImpl().makeCanceledTrip(trip, cancelled);
-      }
-    };
   }
 }

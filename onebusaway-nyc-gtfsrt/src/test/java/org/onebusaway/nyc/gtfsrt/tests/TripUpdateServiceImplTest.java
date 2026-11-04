@@ -23,7 +23,6 @@ import org.onebusaway.gtfs.model.AgencyAndId;
 import org.onebusaway.nyc.gtfsrt.impl.TripUpdateFeedBuilderImpl;
 import org.onebusaway.nyc.gtfsrt.impl.TripUpdateServiceImpl;
 import org.onebusaway.nyc.gtfsrt.service.TripUpdateFeedBuilder;
-import org.onebusaway.nyc.gtfsrt.util.GtfsRealtimeLibrary;
 import org.onebusaway.nyc.presentation.service.realtime.PresentationService;
 import org.onebusaway.nyc.transit_data.services.NycTransitDataService;
 import org.onebusaway.realtime.api.TimepointPredictionRecord;
@@ -69,12 +68,6 @@ public class TripUpdateServiceImplTest {
         return TripUpdate.newBuilder().setTrip(TripDescriptor.newBuilder().setTripId(trip.getId()));
       }
 
-      @Override
-      public TripUpdate.Builder makeCanceledTrip(TripBean trip) {
-        TripStatusBean bean = new TripStatusBean();
-        bean.setServiceDate(System.currentTimeMillis());
-        return GtfsRealtimeLibrary.makeCanceledTrip(trip, bean, null);
-      }
       @Override
       public TripUpdate.Builder makeCanceledTrip(TripBean trip, CancelledTripBean cancelled) {
         return new TripUpdateFeedBuilderImpl().makeCanceledTrip(trip, cancelled);

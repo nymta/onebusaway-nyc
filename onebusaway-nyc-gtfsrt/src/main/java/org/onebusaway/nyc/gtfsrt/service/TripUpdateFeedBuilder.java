@@ -36,14 +36,9 @@ public interface TripUpdateFeedBuilder {
     GtfsRealtime.TripUpdate.Builder makeTripUpdate(TripBean trip, VehicleStatusBean vehicle,
                                                    Collection<TimepointPredictionRecord> records);
 
-    GtfsRealtime.TripUpdate.Builder makeCanceledTrip(TripBean trip);
-
     /**
-     * A CANCELED trip update dated with the cancelled trip's own service date. Consumers key on
-     * (trip_id, start_date), so the date must be the trip's rather than today's. Falls back to the
-     * one-argument form when the bean carries no service date.
+     * A CANCELED trip update dated with the cancelled trip's own service date; consumers key on
+     * (trip_id, start_date). Today's date when the bean carries none.
      */
-    default GtfsRealtime.TripUpdate.Builder makeCanceledTrip(TripBean trip, CancelledTripBean cancelled) {
-        return makeCanceledTrip(trip);
-    }
+    GtfsRealtime.TripUpdate.Builder makeCanceledTrip(TripBean trip, CancelledTripBean cancelled);
 }

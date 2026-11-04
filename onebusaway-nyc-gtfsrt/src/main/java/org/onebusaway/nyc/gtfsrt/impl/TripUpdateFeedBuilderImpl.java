@@ -39,13 +39,12 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
-import java.text.ParseException;
-import java.text.SimpleDateFormat;
 import java.time.LocalDate;
+import java.time.ZoneId;
+import java.time.format.DateTimeParseException;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
-import java.util.TimeZone;
 import java.util.stream.Collectors;
 
 import static org.onebusaway.nyc.gtfsrt.util.GtfsRealtimeLibrary.*;
@@ -127,33 +126,24 @@ public class  TripUpdateFeedBuilderImpl implements TripUpdateFeedBuilder {
     }
 
     @Override
-    public GtfsRealtime.TripUpdate.Builder makeCanceledTrip(TripBean trip) {
-        TripStatusBean empty = new TripStatusBean();
-        empty.setServiceDate(System.currentTimeMillis());
-        return GtfsRealtimeLibrary.makeCanceledTrip(trip, empty, null);
-    }
-
-    @Override
     public GtfsRealtime.TripUpdate.Builder makeCanceledTrip(TripBean trip, CancelledTripBean cancelled) {
         Long serviceDate = serviceDateOf(cancelled);
-        if (serviceDate == null) {
-            return makeCanceledTrip(trip);
-        }
         TripStatusBean status = new TripStatusBean();
-        status.setServiceDate(serviceDate);
+        status.setServiceDate(serviceDate != null ? serviceDate : System.currentTimeMillis());
         return GtfsRealtimeLibrary.makeCanceledTrip(trip, status, null);
     }
 
-    /** The bean's yyyy-MM-dd service date as New York midnight, or null when absent or unparseable. */
+    /**
+     * The bean's yyyy-MM-dd service date as local midnight (the zone the library formats start_date
+     * back in), or null when absent or unparseable.
+     */
     static Long serviceDateOf(CancelledTripBean cancelled) {
         if (cancelled == null || cancelled.getServiceDate() == null || cancelled.getServiceDate().isEmpty()) {
             return null;
         }
         try {
-            SimpleDateFormat f = new SimpleDateFormat("yyyy-MM-dd");
-            f.setTimeZone(TimeZone.getTimeZone("America/New_York"));
-            return f.parse(cancelled.getServiceDate()).getTime();
-        } catch (ParseException e) {
+            return LocalDate.parse(cancelled.getServiceDate()).atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli();
+        } catch (DateTimeParseException e) {
             return null;
         }
     }

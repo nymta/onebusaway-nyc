@@ -1,23 +1,9 @@
-/**
- * Copyright (C) 2026 Metropolitan Transportation Authority
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *         http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
 package org.onebusaway.nyc.transit_data_federation.impl.predictions;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.mockito.Matchers.any;
 import static org.mockito.Matchers.anyInt;
 import static org.mockito.Matchers.anyMap;
 import static org.mockito.Matchers.anyString;
@@ -29,6 +15,7 @@ import static org.mockito.Mockito.when;
 
 import java.util.Collection;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -124,6 +111,24 @@ public class PredictionCancelledTripsSourceTest {
     assertTrue(lastUpdate(2).isEmpty());
     source.expireIfStale(T0 + 200_000);
     verify(cancelled, times(2)).updateCancelledTrips(anyMap()); // nothing left to drop
+  }
+
+  @Test
+  public void theServiceIsHandedConcurrentMaps() {
+    source.update(cancellations(T0, "MTA NYCT_T1"), T0);
+    assertTrue(lastUpdate(1) instanceof ConcurrentHashMap);
+    source.expireIfStale(T0 + 91_000);
+    assertTrue(lastUpdate(2) instanceof ConcurrentHashMap);
+  }
+
+  @Test
+  public void aFailingExpiryCheckIsLoggedNotThrown() {
+    source.update(cancellations(T0, "MTA NYCT_T1"), T0);
+    ConfigurationService config = mock(ConfigurationService.class);
+    when(config.getConfigurationValueAsBoolean(anyString(), any(Boolean.class))).thenThrow(new IllegalStateException("config down"));
+    source.setConfigurationService(config);
+    source.expireTick(); // a throw here would cancel the scheduled task
+    verify(cancelled, times(1)).updateCancelledTrips(anyMap());
   }
 
   @Test

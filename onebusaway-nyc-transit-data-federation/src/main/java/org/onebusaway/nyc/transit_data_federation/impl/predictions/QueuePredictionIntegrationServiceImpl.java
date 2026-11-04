@@ -70,7 +70,6 @@ public class QueuePredictionIntegrationServiceImpl extends
 	@Autowired
 	private ConfigurationService _configurationService;
 
-	// a FULL_DATASET message on this queue is the engine's set of cancelled trips, see PredictionCancelledTripsSource
 	private PredictionCancelledTripsSource _cancelledTripsSource;
 
 	@Autowired(required = false)
@@ -158,11 +157,12 @@ public class QueuePredictionIntegrationServiceImpl extends
 			return;
 		}
 
+		// a FULL_DATASET message is the engine's cancelled-trip set, not predictions
 		if (PredictionCancelledTripsSource.isCancellationMessage(message)) {
 			if (_cancelledTripsSource != null) {
-				_cancelledTripsSource.update(message, System.currentTimeMillis()); // the clock its expiry check uses
+				_cancelledTripsSource.update(message, System.currentTimeMillis());
 			}
-			return; // a cancellation message carries no predictions
+			return;
 		}
 
 		String tripId = null;
