@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The arm's log4j2-predictions.xml plus a daily file of the dispatcher-actions engine's lines. -->
+<Configuration status="WARN">
+  <Appenders>
+    <Console name="stdout" target="SYSTEM_OUT">
+      <PatternLayout pattern="%d{ISO8601} %-5p [%c{1}] %m%n"/>
+    </Console>
+    <RollingFile name="adj" fileName="/data/shadow/logs/adj-current.log" filePattern="/data/shadow/logs/adj-%d{yyyy-MM-dd}.log">
+      <PatternLayout pattern="%d{ISO8601} %-5p [%F:%L] : %m%n"/>
+      <Policies><TimeBasedTriggeringPolicy/></Policies>
+    </RollingFile>
+  </Appenders>
+  <Loggers>
+    <Logger name="org.onebusaway.nyc.predictions.prognosticator.impl.PredictionsGeneratorWorker" level="error"/>
+    <Logger name="org.onebusaway.nyc.predictions.prognosticator.adjustments" level="info" additivity="false">
+      <AppenderRef ref="adj"/>
+    </Logger>
+    <Root level="warn">
+      <AppenderRef ref="stdout"/>
+    </Root>
+  </Loggers>
+</Configuration>

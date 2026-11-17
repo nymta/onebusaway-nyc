@@ -1,0 +1,13 @@
+[Unit]
+Description=Shadow dispatcher-actions predictions webapp (:8092, publishes on 5578, nothing reads it)
+After=network-online.target oba-broker.service
+Wants=network-online.target
+Requires=oba-broker.service
+[Service]
+User=oba
+ExecStart=/data/shadow/run-shadow-predictions.sh
+Restart=always
+RestartSec=30
+LimitNOFILE=65536
+[Install]
+WantedBy=multi-user.target

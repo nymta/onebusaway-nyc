@@ -1,0 +1,6 @@
+[Unit]
+Description=Shadow outputs (adj logs, span file) to S3
+[Service]
+Type=oneshot
+User=oba
+ExecStart=/data/shadow/shadow-sync.sh

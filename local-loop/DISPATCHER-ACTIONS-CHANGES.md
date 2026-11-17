@@ -3,11 +3,14 @@
 The predictions engine (the `onebusaway-nyc-predictions` repo) turns Bus Trek and Yard Trek dispatcher
 actions into `SKIPPED` stop-time updates and `FULL_DATASET` messages of bare `CANCELED` trip updates on
 its predictions queue. This repo's changes make the TDS, GTFS-RT and SIRI carry those two signals to
-riders, and keep an archive of the two live dispatcher snapshots the engine reads. Design, measurements,
-blockers and the end-to-end test plan live in the predictions repo:
-`replay/docs/DISPATCHER-ACTIONS-STATUS.md` (overview), `-PLAYBOOK.md` (design, fix numbers F*),
-`-EVIDENCE.md` (numbers). Branch `timothy/dispatcher-actions`: commit `676d8594` plus the uncommitted cleanup
-and archiver files (2026-11-04). The bundle-builder CSVs at the transit-data-federation module root are not part of this work; `.gitignore` now lists them.
+riders, archive the two live dispatcher snapshots the engine reads, and install the engine's shadow
+instance. Status, measurements, blockers and the end-to-end test plan live in the predictions repo:
+`replay/docs/DISPATCHER-ACTIONS-STATUS.md` (start there), `-PLAYBOOK.md` (design, fix numbers F*),
+`-EVIDENCE.md` (numbers).
+
+Branch `timothy/dispatcher-actions`, three commits: the OBA changes (`676d8594`, hardened in `f9e12401`)
+and the archivers with this file (`ccf10d6e`). Uncommitted: `local-loop/ec2/shadow/` and the
+`EC2-DEPLOYMENT.md` bullets for the shadow and the inference archiver.
 
 ## Files
 
@@ -22,12 +25,15 @@ and archiver files (2026-11-04). The bundle-builder CSVs at the transit-data-fed
 | `…/impl/realtime/siri/SiriOnwardCallsBuilderServiceImpl.java`, `SiriMonitoredCallBuilderServiceImpl.java` | Use it when building SIRI v1 calls | F10 |
 | `…/impl/realtime/RealtimeServiceImpl.java` | Vehicle monitoring drops skipped onward calls; stop monitoring drops skipped onward calls and hides a visit whose own stop is skipped, unless `showCancelled` was asked for | F10 |
 | `onebusaway-nyc-webapp/…/api/siri/impl/SiriSupportV2.java`, `RealtimeServiceV2Impl.java` | The same for the SIRI v2 (`siri_2`) types | F10 |
-| Tests: `PredictionCancelledTripsSourceTest` (new), `QueuePredictionIntegrationServiceImplTest` (+2), `TripUpdateServiceImplTest` (+2), `SkippedStopSupportTest` (new), `SiriSupportV2SkippedStopTest` (new, webapp), `RecordedCancellationFeedTest` (new, gated) | Unit tests per fix; the gated harness replays a recorded engine stream through the real source, cancelled-trip service and GTFS-RT builder and checks the `CANCELED` set mirrors every message and empties after the TTL | all |
-| `local-loop/ec2/opt-oba/run-snapshot-archiver.sh` (new), `local-loop/ec2/systemd/oba-{bustrek,yardtrek}-live-archiver.service` (new), `local-loop/ec2/iam/oba-yardtrek-live-read.json` (new) | Archiver for the two live snapshots (below) | archivers |
-| `.gitignore` | The six bundle-builder CSVs the transit-data-federation tests leave at the module root | — |
+| Tests: `PredictionCancelledTripsSourceTest` (new), `QueuePredictionIntegrationServiceImplTest` (+2, +3 for F11), `RecordedEmptyEntityTest` (new, gated: F11), `TripUpdateServiceImplTest` (+2), `SkippedStopSupportTest` (new), `SiriSupportV2SkippedStopTest` (new, webapp), `RecordedCancellationFeedTest` (new, gated) | Unit tests per fix; the gated harness replays a recorded engine stream through the real source, cancelled-trip service and GTFS-RT builder and checks the `CANCELED` set mirrors every message and empties after the TTL | all |
+| `local-loop/ec2/opt-oba/run-snapshot-archiver.sh` (new), `local-loop/ec2/systemd/oba-{bustrek,yardtrek}-live-archiver.service` (new), `local-loop/ec2/iam/oba-yardtrek-live-read.json` (new) | Archiver for the two live snapshots (below) | tooling |
+| `local-loop/ec2/shadow/` (new, uncommitted) | Installer, launchers and units for the engine's shadow instance on an arm; its [README](ec2/shadow/README.md) | tooling |
+| `.gitignore` | The six bundle-builder CSVs the transit-data-federation tests leave at the module root (not part of this work) | — |
 
-New files carry no license header (a decision for this work; the existing files keep theirs). Build with
-`-Dlicense.skip=true`.
+New files carry no license header; existing files keep theirs. Build with `-Dlicense.skip=true`.
+
+The PR against `develop` needs only the first two commits (F13, F6, F9, F10 and their tests); the
+`local-loop/` files are tooling and can go with it or stay on the branch.
 
 ## Configuration
 
@@ -38,8 +44,8 @@ New files carry no license header (a decision for this work; the existing files 
 | `showCancelled` | SIRI request parameter (existing) | false | when set, skipped calls and visits are kept, marked `CANCELLED`, as cancelled trips are |
 
 No new queue, port or host: the TDS reads the cancellation messages on the predictions queue it already
-consumes. The inference engine's own cancelled-trip cache is deliberately never fed, so a bus the engine
-places on a cancelled trip is still inferred; that sighting is the producer's un-cancel signal.
+consumes. The inference engine's own cancelled-trip cache is deliberately never fed, so a bus is still
+inferred onto a cancelled trip; that sighting is the producer's un-cancel signal.
 
 ## Testing
 
@@ -53,6 +59,24 @@ mvn -o test -pl onebusaway-nyc-gtfsrt -Dtest=RecordedCancellationFeedTest -Dlice
     -Drecorded.cancellations.pb=/path/adj-2026-08-13.pb -Drecorded.cancellations.out=/path/tds-spans.csv
 ```
 
+F11, the empty-entity contract: an entity with no stop times (the engine's next trip for a bus leaving service, or a
+trip it withholds because it is cancelled) must replace the consumer's cached times for that vehicle and trip at once.
+`QueuePredictionIntegrationServiceImplTest` checks it for a next trip and a current trip, and that without the empty
+entity the old times stay until `tds.prediction.expiry`. `RecordedEmptyEntityTest` replays a recorded predictions stream
+through the real consumer (the schedule lookup stubbed from the stream's own stops) and asserts every empty entity
+leaves no cached times:
+
+```bash
+# a predictions stream with the engine on: a full-stack replay's .pb, or a predictions archive hour converted to
+# length-delimited FeedMessages
+mvn -o test -pl onebusaway-nyc-transit-data-federation -Dtest=RecordedEmptyEntityTest -Dlicense.skip=true \
+    -DargLine="-Xmx8g --add-opens java.base/java.lang=ALL-UNNAMED --add-opens java.base/java.util=ALL-UNNAMED -Drecorded.predictions.pb=/path/stream.pb"
+```
+
+On the shadow's Nov 9 14:00 UTC hour (377,665 predictions messages): 191 empty entities, every one cleared; 17 of them
+replaced times the consumer was still holding. GTFS-RT then emits nothing for that trip: `addPredictedEntities` stops
+at a trip with no records.
+
 The harness output (`tds-spans.csv`, one row per cancelled trip instance with cancel and un-cancel instants
 as the TDS saw them) is compared with the producer's `cancel-timeline.py` in the predictions repo; on the
 runs so far they match exactly.
@@ -65,7 +89,7 @@ about every 60 s; `s3://yardtrek-digital-services/yardtrek-blocks_latest.csv`, t
 about every 30 s). `run-snapshot-archiver.sh <bustrek|yardtrek>` polls the object's ETag and copies every new
 version, gzipped, to `s3://ds-oba/replay/prediction/dispatcher-actions/<name>-live/<UTC date>/<UTC time>Z.csv.gz`,
 named by the source's LastModified. The predictions repo's replay tools play those files back on record time
-(`adjustments.yardtrek.dir`, `bustrek-live-lag.py`), which is how live days are re-run offline.
+(`live-day.sh`, `adjustments.yardtrek.dir`), which is how live days are re-run offline.
 
 Both units run on `oba-nyc-filtered` (Yard Trek since 2026-10-26 21:14 UTC, Bus Trek since 2026-10-29 21:30 UTC).
 The box still runs the earlier two-script form (`run-{bustrek,yardtrek}-live-archiver.sh`); the merged script
@@ -89,8 +113,7 @@ They feed no OBA service and are safe to restart alone; an outage is an unrecove
 
 ## What is necessary, and what is not
 
-For the engine's output to reach riders correctly, three of these changes are required and the rest are
-quality or tooling:
+What each change prevents, for whoever reviews or trims the PR:
 
 | Change | Without it | Verdict |
 |---|---|---|
@@ -101,14 +124,13 @@ quality or tooling:
 | `SiriSupportV2`, `RealtimeServiceV2Impl` (F10, SIRI v2) | the same for v2 clients | required if v2 is served to anyone |
 | `CANCELED` entity `timestamp` in seconds and `start_date` from the trip's service date (F6) | the entity is still emitted; its timestamp is 1,000x too large and its date is the build day, wrong for a trip cancelled after midnight; consumers keying on (trip_id, start_date) miss it | strongly advised, two small changes |
 | `tds.predictionCancelTtlSeconds` and the expiry thread | a silent producer leaves trips cancelled until the TDS restarts | advised; the default needs no config |
-| the snapshot archivers | the replay tooling loses its live inputs; no rider effect | tooling |
+| the snapshot archivers, the shadow installer | the replay tooling loses its live inputs; no rider effect | tooling |
 
 ## Not done
 
-- The PR against `develop` is not opened. F10 must ship with F9: without the SIRI filter a skipped stop shows as
-  "expected now". F13 stands aside while `tds.enableCapi` is true, so the swap is a config decision at deploy time.
-- The TDS's reaction to the engine's empty next-trip entity (F11, predictions repo) is not verified with a TDS in
-  the loop; one harness test in the `RecordedCancellationFeedTest` pattern would do it.
+- The PR against `develop` is not opened. F10 must ship with F9 (table above). F13 stands aside while
+  `tds.enableCapi` is true, so the swap is a config decision at deploy time.
 - `RealtimeServiceV2Impl`'s visit hiding has no unit test; the `SiriSupportV2` helpers do.
 - `tds.predictionCancelTtlSeconds` has no TDM default entry; the code default (90 s) applies.
-- Nothing from this branch is deployed to any OBA instance except the two archiver units.
+- None of the OBA changes is deployed to any instance. Running from this branch, all on `oba-nyc-filtered` and
+  none feeding an OBA service: the two snapshot archivers and the shadow units.

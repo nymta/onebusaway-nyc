@@ -1,0 +1,12 @@
+[Unit]
+Description=Shadow predictions archiver (ZMQ :5578 -> s3://ds-oba/replay/prediction/dispatcher-actions/shadow/)
+After=network-online.target oba-shadow-predictions.service
+Wants=network-online.target
+Requires=oba-shadow-predictions.service
+[Service]
+User=oba
+ExecStart=/data/shadow/run-shadow-archiver.sh
+Restart=always
+RestartSec=15
+[Install]
+WantedBy=multi-user.target
