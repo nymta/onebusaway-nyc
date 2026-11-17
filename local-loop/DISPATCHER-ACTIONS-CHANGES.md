@@ -8,8 +8,11 @@ instance. Status, measurements, blockers and the end-to-end test plan live in th
 `replay/docs/DISPATCHER-ACTIONS-STATUS.md` (start there), `-PLAYBOOK.md` (design, fix numbers F*),
 `-EVIDENCE.md` (numbers).
 
-Branch `timothy/dispatcher-actions`, three commits: the OBA changes (`676d8594`, hardened in `f9e12401`)
-and the archivers with this file (`ccf10d6e`). Uncommitted: `local-loop/ec2/shadow/` and the
+Branch `timothy/dispatcher-actions`, five commits: the OBA changes (`676d8594`, hardened in `f9e12401`),
+the archivers with this file (`ccf10d6e`), and, committed locally on 2026-11-17 and not pushed, the F11 tests with
+comment cleanups (`305b20cf2`) and the shadow installer with the deployment notes (`1e9f9429e`). Stage 5 will deploy
+this branch to a new arm cloned from v3; the PR against `develop` waits for a clean stage 5 week. Both wait on the
+cancel-timing decision in the predictions repo (DECISIONS #9). Formerly uncommitted: `local-loop/ec2/shadow/` and the
 `EC2-DEPLOYMENT.md` bullets for the shadow and the inference archiver.
 
 ## Files
@@ -127,6 +130,10 @@ What each change prevents, for whoever reviews or trims the PR:
 | the snapshot archivers, the shadow installer | the replay tooling loses its live inputs; no rider effect | tooling |
 
 ## Not done
+
+- CamSys (owner of the OBA dev environment) asked for a pre-meeting packet and described their PR and ticket format;
+  the answers, the PR and ticket text and the manual test cases are in the predictions repo,
+  `replay/docs/DISPATCHER-ACTIONS-REVIEW-PACKET.md`.
 
 - The PR against `develop` is not opened. F10 must ship with F9 (table above). F13 stands aside while
   `tds.enableCapi` is true, so the swap is a config decision at deploy time.
