@@ -6,13 +6,13 @@ import uk.org.siri.siri.OnwardCallStructure;
 import uk.org.siri.siri.ProgressStatusEnumeration;
 
 /**
- * A skipped stop is one the predictions feed marked SKIPPED: the bus will not serve it, and its
- * prediction record carries no times, which the expected-time logic would otherwise render as
- * "now". The call builders give such a call no expected times and mark it CANCELLED; the realtime
- * services then drop skipped onward calls and, in stop monitoring, a visit whose own stop is
- * skipped, unless the request asked for cancelled service (showCancelled), which keeps everything
- * marked. Without showCancelled nothing else marks a call CANCELLED, so the mark alone identifies a
- * skipped call. SiriSupportV2 carries the same logic for the siri_2 types.
+ * Stops the predictions feed marked SKIPPED: the bus will not serve them, and their prediction
+ * records carry no times, which the expected-time logic would render as "now". The call builders
+ * give such a call no expected times and mark it CANCELLED. Vehicle monitoring then drops skipped
+ * onward calls; stop monitoring drops them too, and a visit whose own stop is skipped, unless the
+ * request set showCancelled, which keeps them, marked. Without showCancelled nothing else marks a
+ * call CANCELLED, so the mark alone identifies a skipped call. SiriSupportV2 does the same for the
+ * siri_2 types.
  */
 public final class SkippedStopSupport {
 
@@ -35,14 +35,14 @@ public final class SkippedStopSupport {
         call.setDepartureStatus(ProgressStatusEnumeration.CANCELLED);
     }
 
-    /** The monitored call carries the skipped mark (meaningful without showCancelled, see above). */
+    /** True when the monitored call carries the skipped mark; reliable only without showCancelled. */
     public static boolean hasSkippedMonitoredCall(MonitoredVehicleJourneyStructure journey) {
         return journey != null
                 && journey.getMonitoredCall() != null
                 && journey.getMonitoredCall().getArrivalStatus() == ProgressStatusEnumeration.CANCELLED;
     }
 
-    /** Drops the onward calls carrying the skipped mark (meaningful without showCancelled, see above). */
+    /** Drops the onward calls carrying the skipped mark; reliable only without showCancelled. */
     public static void removeSkippedOnwardCalls(MonitoredVehicleJourneyStructure journey) {
         if (journey == null || journey.getOnwardCalls() == null) {
             return;

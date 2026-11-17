@@ -188,8 +188,7 @@ public class QueuePredictionIntegrationServiceImpl extends
 				// this validates the Agency_StopID convention
 				tpr.setTimepointId(AgencyAndIdLibrary.convertFromString(stu.getStopId()));
 				if (stu.getScheduleRelationship() == StopTimeUpdate.ScheduleRelationship.SKIPPED) {
-					// the bus will not serve this stop; leave the times at the record's "unknown" (-1)
-					// rather than copying the unset protobuf fields, which read as 0, a 1970 arrival
+					// keep the record's "unknown" times (-1): the unset protobuf fields read as 0, a 1970 arrival
 					tpr.setScheduleRealtionship(TimepointPredictionRecord.ScheduleRelationship.SKIPPED.getValue());
 				} else {
 					tpr.setTimepointPredictedArrivalTime(stu.getArrival().getTime());

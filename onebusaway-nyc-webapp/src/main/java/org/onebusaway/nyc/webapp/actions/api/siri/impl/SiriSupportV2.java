@@ -101,10 +101,10 @@ public final class SiriSupportV2 {
 	}
 
 	/*
-	 * Skipped stops, the siri_2 twin of SkippedStopSupport: a call the bus will not serve
-	 * (prediction record SKIPPED) gets no expected times and is marked CANCELLED. The realtime
-	 * service drops such calls, and a stop visit whose monitored call is skipped, unless the request
-	 * asked for cancelled trips. v2 marks a cancelled trip on the journey, never on its calls, so a
+	 * Skipped stops, the siri_2 twin of SkippedStopSupport: a call whose prediction record is
+	 * SKIPPED gets no expected times and is marked CANCELLED. The realtime service drops such onward
+	 * calls, and in stop monitoring a visit whose monitored call is skipped, unless the request asked
+	 * for cancelled trips. v2 marks a cancelled trip on the journey, never on its calls, so a
 	 * CANCELLED call always identifies a skipped stop.
 	 */
 	private static void markSkipped(OnwardCallStructure call) {

@@ -148,6 +148,48 @@ public class QueuePredictionIntegrationServiceImplTest {
     assertFalse(service.getPredictionRecordsForVehicleAndTrip("vehicle1", "trip1").iterator().next().isSkipped());
   }
 
+  private static FeedMessage message(TripUpdate.Builder... updates) {
+    FeedMessage.Builder m = FeedMessage.newBuilder()
+            .setHeader(FeedHeader.newBuilder().setGtfsRealtimeVersion("1.0").setTimestamp(1));
+    for (TripUpdate.Builder tu : updates) {
+      m.addEntity(FeedEntity.newBuilder().setTripUpdate(tu).setId(tu.getTrip().getTripId()));
+    }
+    return m.build();
+  }
+
+  private static TripUpdate.Builder empty(String tripId) {
+    return TripUpdate.newBuilder()
+            .setTrip(TripDescriptor.newBuilder().setTripId(tripId))
+            .setVehicle(VehicleDescriptor.newBuilder().setId("vehicle1"));
+  }
+
+  @Test
+  public void anEmptyNextTripEntityReplacesTheCachedTimes() {
+    // a bus leaving service: the engine publishes its next trip with no stop times
+    service.processResult(message(getTripUpdate("trip1", "stop1"), getTripUpdate("trip2", "stop2")));
+    assertEquals(1, service.getPredictionRecordsForVehicleAndTrip("vehicle1", "trip2").size());
+    service.processResult(message(getTripUpdate("trip1", "stop1"), empty("trip2")));
+    assertTrue("the next trip's times are gone", service.getPredictionRecordsForVehicleAndTrip("vehicle1", "trip2").isEmpty());
+    assertTrue(service.getPredictionRecordsForVehicleAndTripByStopId("vehicle1", "trip2").isEmpty());
+    assertEquals("the current trip is kept", 1, service.getPredictionRecordsForVehicleAndTrip("vehicle1", "trip1").size());
+  }
+
+  @Test
+  public void withoutTheEmptyEntityTheOldTimesStayUntilTheyExpire() {
+    service.processResult(message(getTripUpdate("trip1", "stop1"), getTripUpdate("trip2", "stop2")));
+    service.processResult(message(getTripUpdate("trip1", "stop1")));
+    assertEquals("stale until tds.prediction.expiry", 1, service.getPredictionRecordsForVehicleAndTrip("vehicle1", "trip2").size());
+  }
+
+  @Test
+  public void anEmptyCurrentTripEntityReplacesItsTimesAndKeepsTheNextTrip() {
+    // a cancelled current trip: the engine withholds it and keeps the bus's next trip
+    service.processResult(message(getTripUpdate("trip1", "stop1"), getTripUpdate("trip2", "stop2")));
+    service.processResult(message(empty("trip1"), getTripUpdate("trip2", "stop2")));
+    assertTrue(service.getPredictionRecordsForVehicleAndTrip("vehicle1", "trip1").isEmpty());
+    assertEquals(1, service.getPredictionRecordsForVehicleAndTrip("vehicle1", "trip2").size());
+  }
+
   private TripUpdate.Builder getTripUpdate(String tripId, String stopId) {
     return TripUpdate.newBuilder()
             .setTrip(TripDescriptor.newBuilder().setTripId(tripId))

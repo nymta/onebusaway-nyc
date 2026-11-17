@@ -30,16 +30,15 @@ import com.google.transit.realtime.GtfsRealtime.TripUpdate;
 /**
  * Feeds the cancelled-trip service from the predictions queue instead of the polled CAPI list.
  *
- * On the same queue as its predictions, the predictions engine publishes FULL_DATASET messages
- * whose entities are bare CANCELED trip updates (trip, route, direction, start date; no vehicle,
- * no stop times). Each one is the complete set of cancelled trips at that moment, so it replaces
- * the service's map outright, an empty message included: a trip that is no longer cancelled is
- * simply absent. If no such message arrives within the time-to-live the set is dropped, so a
- * silent producer cannot leave trips cancelled.
+ * Alongside its predictions the engine publishes FULL_DATASET messages of bare CANCELED trip
+ * updates (trip, route, direction, start date; no vehicle, no stop times). Each is the complete
+ * cancelled set at that moment and replaces the service's map outright, an empty message included:
+ * a trip no longer cancelled is simply absent. The set is dropped when no message arrives within
+ * the time-to-live, so a silent producer cannot leave trips cancelled.
  *
- * The inference engine's own cancelled-trip cache is deliberately not fed from here: it keeps
- * matching buses onto a cancelled trip, which is how the producer sees the trip come back.
- * While {@code tds.enableCapi} is true the CAPI poller owns the set and this source does nothing.
+ * The inference engine's own cancelled-trip cache is deliberately not fed: it keeps matching buses
+ * onto a cancelled trip, which is how the producer sees the trip come back. While
+ * {@code tds.enableCapi} is true the CAPI poller owns the set and this source does nothing.
  */
 public class PredictionCancelledTripsSource {
 
@@ -91,8 +90,8 @@ public class PredictionCancelledTripsSource {
 
 	/**
 	 * True for a message that carries the cancelled set: the engine marks those, and only those,
-	 * FULL_DATASET. The header field must be present, since an unset field also reads as FULL_DATASET
-	 * (the protobuf default).
+	 * FULL_DATASET. The field must be set explicitly, since unset it also reads as FULL_DATASET (the
+	 * protobuf default).
 	 */
 	public static boolean isCancellationMessage(FeedMessage message) {
 		return message.hasHeader() && message.getHeader().hasIncrementality()
