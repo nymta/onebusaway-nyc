@@ -3,6 +3,21 @@
 # clone starts every oba unit with the source's identity: it would upload into the source's archive prefixes and run
 # the source's extra units (on oba-nyc-cancel: the GTFS-RT archiver; on oba-nyc-filtered: the shadow engine and the
 # Bus Trek / Yard Trek snapshot archivers).
-# Runs once; the identity is installed afterwards by dispatcher/install.sh.
+#
+# Two layers, both before network-online.target, which every oba unit waits for:
+#   bootcmd      stops and disables every oba-* unit and removes the inherited identity (once for this instance)
+#   write_files  leaves a quarantine identity in its place, with uploads off, so that even a unit that did start
+#                could not write into another instance's prefix
+# The real identity is installed afterwards by dispatcher/install.sh, which requires the marker file.
 bootcmd:
-  - [ cloud-init-per, once, oba-quarantine, sh, -c, "for u in $(systemctl list-unit-files 'oba-*' --no-legend | awk '{print $1}'); do systemctl stop $u; systemctl disable $u; done; rm -f /opt/oba/env-local.sh; date -u > /opt/oba/CLONE-QUARANTINED" ]
+  - [ cloud-init-per, instance, oba-clone-quarantine, sh, -c, "for u in $(systemctl list-unit-files 'oba-*' --no-legend | awk '{print $1}'); do systemctl stop $u; systemctl disable $u; done; rm -f /opt/oba/env-local.sh; date -u > /opt/oba/CLONE-QUARANTINED" ]
+write_files:
+  - path: /opt/oba/env-local.sh
+    permissions: '0644'
+    content: |
+      # /opt/oba/env-local.sh  --  QUARANTINED CLONE, no identity yet (dispatcher/install.sh replaces this file)
+      export OBA_DEADBAND_ENABLED=false
+      export OBA_RMQ_STREAM_NAME=nyct.bustech.gps-filtered
+      export OBA_ARCHIVER_S3_PREFIX=quarantine-unidentified-clone
+      export OBA_ARCHIVER_UPLOAD=false
+      export OBA_CSPUB_ENABLED=0

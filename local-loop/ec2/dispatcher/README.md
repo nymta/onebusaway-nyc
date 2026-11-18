@@ -24,7 +24,7 @@ Nothing here has been run yet. The files:
 | file | what |
 |---|---|
 | `../env-local/oba-nyc-dispatcher.sh` | the instance's identity: v3's input and settings, the archive prefixes, the engine flags (`OBA_PREDICTIONS_EXTRA_OPTS`) and the log config (`OBA_PREDICTIONS_LOG4J`) |
-| `quarantine-userdata.yaml` | first boot of the clone: stops and disables every `oba-*` unit and removes the inherited `env-local.sh`, once (it works for a clone of any OBA instance) |
+| `quarantine-userdata.yaml` | first boot of the clone, before any OBA unit can start: stops and disables every `oba-*` unit, removes the inherited `env-local.sh` and leaves a quarantine one with uploads off (it works for a clone of any OBA instance; `oba-nyc-cancel` itself was launched with the `write_files` half) |
 | `install.sh` | on the quarantined clone, as root: installs the identity, the log config, the sync timer and `TimePoints.csv`, disables the units that belong to other instances, enables this instance's |
 | `log4j2-predictions-dispatcher.xml` | `log4j2-predictions.xml` plus a daily file of the engine's decision lines, `/data/adjustments/logs/adj-<date>.log` |
 | `adjustments-sync.sh`, `oba-adjustments-sync.service`, `.timer` | hourly: decision logs and the skip-span file to `s3://ds-oba/replay/prediction/dispatcher-actions/live/v7-dispatcher-actions/` |
@@ -65,7 +65,7 @@ aws ec2 describe-instances --instance-ids $ID \
 # 4. over SSM on the clone: confirm the quarantine held before anything else
 cat /opt/oba/CLONE-QUARANTINED; systemctl is-active oba-predictions oba-inference oba-gtfsrt \
   oba-gtfsrt-archiver oba-predictions-archiver                                     # all inactive
-ls /opt/oba/env-local.sh                                                          # gone
+grep -c quarantine /opt/oba/env-local.sh                                          # the quarantine identity, not the source's
 journalctl -b --no-pager -u 'oba-*' | head                                       # nothing from this boot
 
 # 5. install the identity (starts nothing)
