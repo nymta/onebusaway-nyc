@@ -8,12 +8,12 @@ instance. Status, measurements, blockers and the end-to-end test plan live in th
 `replay/docs/DISPATCHER-ACTIONS-STATUS.md` (start there), `-PLAYBOOK.md` (design, fix numbers F*),
 `-EVIDENCE.md` (numbers).
 
-Branch `timothy/dispatcher-actions`, five commits: the OBA changes (`676d8594`, hardened in `f9e12401`),
-the archivers with this file (`ccf10d6e`), and, committed locally on 2026-11-17 and not pushed, the F11 tests with
-comment cleanups (`305b20cf2`) and the shadow installer with the deployment notes (`1e9f9429e`). Stage 5 will deploy
-this branch to a new arm cloned from v3; the PR against `develop` waits for a clean stage 5 week. Both wait on the
-cancel-timing decision in the predictions repo (DECISIONS #9). Formerly uncommitted: `local-loop/ec2/shadow/` and the
-`EC2-DEPLOYMENT.md` bullets for the shadow and the inference archiver.
+Branch `timothy/dispatcher-actions`, pushed. The OBA changes are `676d8594`, hardened in `f9e12401`, with the F11
+tests and comment cleanups in `305b20cf2`; the rest is `local-loop/` tooling (the archivers, the shadow installer, the
+live instance's config and runbook). The branch is deployed on `oba-nyc-dispatcher` (stage 5, live since 2026-11-18;
+`ec2/dispatcher/README.md`). It is built on `ds/ec2-deploy`, so the PR against `develop` needs a branch cut from
+`develop` with only the 22 files outside `local-loop/`; they apply cleanly to `develop` at `c523e244f`
+(predictions repo, REVIEW-PACKET §1).
 
 ## Files
 
