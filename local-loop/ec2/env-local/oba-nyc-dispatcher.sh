@@ -6,6 +6,7 @@
 export OBA_DEADBAND_ENABLED=false
 export OBA_RMQ_STREAM_NAME=nyct.bustech.gps-filtered
 export OBA_ARCHIVER_S3_PREFIX=v7-dispatcher-actions
+export OBA_INF_ARCHIVER_S3_PREFIX=oba-ec2-inference/v7-dispatcher-actions
 
 # The publisher belongs to oba-nyc-prod alone (it holds the allowlisted Elastic IP).
 export OBA_CSPUB_ENABLED=0
@@ -20,3 +21,6 @@ export OBA_PREDICTIONS_EXTRA_OPTS="-Dadjustments.source=bustrek,yardtrek \
  -Dadjustments.skipSpansFile=/data/adjustments/skip-spans.csv \
  -Dadjustments.dwellClear=true \
  -Dadjustments.cancel.corroboratedWaitMinutes=0"
+
+# The engine's decision lines ("adj ...") go to /data/adjustments/logs, synced to S3 hourly (dispatcher/README.md).
+export OBA_PREDICTIONS_LOG4J=/opt/oba/log4j2-predictions-dispatcher.xml

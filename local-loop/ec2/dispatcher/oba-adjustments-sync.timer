@@ -1,0 +1,7 @@
+[Unit]
+Description=Hourly dispatcher-actions output sync
+[Timer]
+OnCalendar=hourly
+Persistent=true
+[Install]
+WantedBy=timers.target

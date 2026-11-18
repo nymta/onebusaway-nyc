@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- log4j2-predictions.xml plus a daily file of the dispatcher-actions engine's decision lines. -->
+<Configuration status="WARN">
+  <Appenders>
+    <Console name="stdout" target="SYSTEM_OUT">
+      <PatternLayout pattern="%d{ISO8601} %-5p [%c{1}] %m%n"/>
+    </Console>
+    <RollingFile name="adj" fileName="/data/adjustments/logs/adj-current.log" filePattern="/data/adjustments/logs/adj-%d{yyyy-MM-dd}.log">
+      <PatternLayout pattern="%d{ISO8601} %-5p [%F:%L] : %m%n"/>
+      <Policies><TimeBasedTriggeringPolicy/></Policies>
+    </RollingFile>
+  </Appenders>
+  <Loggers>
+    <!-- Per-vehicle hot path; its warns fire per update. -->
+    <Logger name="org.onebusaway.nyc.predictions.prognosticator.impl.PredictionsGeneratorWorker" level="error"/>
+    <!-- YardTrek pullout refresh + cache state: once a minute, and the only view we have of it. -->
+    <Logger name="org.onebusaway.nyc.predictions.prognosticator.impl.PulloutsManagementService" level="info"/>
+    <Logger name="org.onebusaway.nyc.predictions.prognosticator.adjustments" level="info" additivity="false">
+      <AppenderRef ref="adj"/>
+    </Logger>
+    <Root level="warn">
+      <AppenderRef ref="stdout"/>
+    </Root>
+  </Loggers>
+</Configuration>

@@ -1,0 +1,6 @@
+[Unit]
+Description=Dispatcher-actions decision logs and span file to S3
+[Service]
+Type=oneshot
+User=oba
+ExecStart=/opt/oba/adjustments-sync.sh

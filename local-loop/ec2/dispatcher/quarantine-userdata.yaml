@@ -1,0 +1,7 @@
+#cloud-config
+# First boot of a clone of an OBA instance: stop it from acting as the instance it was cloned from. Without this the
+# clone starts every oba unit with the source's identity: it would upload into the source's archive prefixes and run
+# the source's extra units (on oba-nyc-filtered: the shadow engine and the Bus Trek / Yard Trek snapshot archivers).
+# Runs once; the identity is installed afterwards by dispatcher/install.sh.
+bootcmd:
+  - [ cloud-init-per, once, oba-quarantine, sh, -c, "for u in $(systemctl list-unit-files 'oba-*' --no-legend | awk '{print $1}'); do systemctl stop $u; systemctl disable $u; done; rm -f /opt/oba/env-local.sh; date -u > /opt/oba/CLONE-QUARANTINED" ]
