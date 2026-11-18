@@ -73,7 +73,7 @@ aws s3 cp $P/deploy/install.sh /root/install.sh && bash /root/install.sh
 
 # 6. build both repos at the branch and start the chain (several minutes; Mongo is not touched)
 /opt/oba/deploy.sh deploy timothy/dispatcher-actions timothy/dispatcher-actions
-systemctl start oba-inference-archiver oba-monitor.timer oba-adjustments-sync.timer
+systemctl start oba-monitor.timer oba-adjustments-sync.timer
 
 # 7. verify against the process, not the files
 ps -ef | grep -o 'oba.rmq.streamName=[^ ]*'                    # nyct.bustech.gps-filtered
@@ -98,9 +98,9 @@ scoring from the synced logs.
   stay close.
 - **The cancel instance's code and units:** replaced or disabled, as above. Its `/data/gtfsrt-archive` and
   `/data/historicals` (2 GB) come along and can be deleted on the clone.
-- **No inference archiver:** `oba-nyc-cancel` has none, so this instance's own inference is not archived unless the
-  archiver is copied from `oba-nyc-filtered`. That instance's archive is the same input through the same inference
-  code and serves for replays.
+- **The inference archiver stays off:** the unit is on the clone but disabled, and `install.sh` leaves it so. This
+  instance's inference is `oba-nyc-filtered`'s input through the same code, and that instance's archive serves for
+  replays. Enable `oba-inference-archiver` here if a replay of one of its days fails to match its live decisions.
 - **Dependence on the control:** `oba-nyc-cancel` has to keep running unchanged for the comparison to hold, and its
   owner should know it is now a control.
 
@@ -109,7 +109,6 @@ scoring from the synced logs.
 - A CloudWatch dashboard and disk alarm for the instance (v3's were copied from prod's with the ids rewritten).
 - Stopping the shadow units on `oba-nyc-filtered` once this instance publishes, or keeping them a week to compare
   the shadow's decisions with the live ones.
-- Copying the inference archiver from `oba-nyc-filtered`.
 
 ## Rollback
 

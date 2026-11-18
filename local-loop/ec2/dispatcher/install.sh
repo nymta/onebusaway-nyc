@@ -28,8 +28,10 @@ for u in oba-gtfsrt-archiver oba-shadow-predictions oba-shadow-archiver oba-shad
   systemctl disable --now $u 2>/dev/null || true
 done
 systemctl daemon-reload
-# enable what exists: an instance cloned from one without the inference archiver simply has none
-for u in oba-broker oba-inference oba-predictions oba-gtfsrt oba-predictions-archiver oba-inference-archiver oba-weights oba-monitor.timer oba-adjustments-sync.timer; do
+# enable what exists
+# oba-inference-archiver is left disabled: this instance's inference is oba-nyc-filtered's input through the same
+# code, and that instance archives it
+for u in oba-broker oba-inference oba-predictions oba-gtfsrt oba-predictions-archiver oba-weights oba-monitor.timer oba-adjustments-sync.timer; do
   systemctl enable -q $u 2>/dev/null || echo "not installed here, skipped: $u"
 done
 echo "identity installed: $(grep -c '^export' /opt/oba/env-local.sh) exports. Next: /opt/oba/deploy.sh deploy timothy/dispatcher-actions timothy/dispatcher-actions"
