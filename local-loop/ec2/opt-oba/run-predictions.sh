@@ -5,6 +5,8 @@ export MAVEN_OPTS="-Xmx10g"
 cd "$PRED/onebusaway-nyc-predictions-webapp"
 # predictions.* overrides, read by SystemPropertyConfigurationServiceImpl.
 # We set PredictionLevel to NEXT_TRIP to match the config set by Prod TDM config.
+# OBA_PREDICTIONS_EXTRA_OPTS (env-local.sh, unset on most instances) adds per-instance -D flags, e.g. the
+# dispatcher-actions engine's adjustments.* settings. Unquoted on purpose: it is a list of flags.
 exec mvn -B -DskipTests -Dlicense.skip=true \
   -Dbundle.location="$BUNDLE" -Dbundle.mode.standalone=true -Dtdm.host= \
   -Dmongohost=localhost -Dmongoport=27017 -Dmongouser= -Dmongopwd= \
@@ -14,4 +16,5 @@ exec mvn -B -DskipTests -Dlicense.skip=true \
   -Dorg.onebusaway.nyc.tdm.bundle.batchmode=true \
   -Doba.config.predictions.PredictionLevel=NEXT_TRIP \
   -Djetty.http.port=8082 \
+  ${OBA_PREDICTIONS_EXTRA_OPTS:-} \
   "$JETTY"
