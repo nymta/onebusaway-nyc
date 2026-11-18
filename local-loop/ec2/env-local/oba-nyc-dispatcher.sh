@@ -1,8 +1,10 @@
 # /opt/oba/env-local.sh  --  oba-nyc-dispatcher  (instance id: not created yet)
 #
-# The dispatcher-actions instance (archive prefix v7-dispatcher-actions): oba-nyc-filtered's input and settings, with
-# the predictions engine's dispatcher adjustments switched on. oba-nyc-filtered stays as its control, so the
-# engine is the only difference between the two. Both repos run their timothy/dispatcher-actions branch here.
+# The dispatcher-actions instance (archive prefix v7-dispatcher-actions): oba-nyc-filtered's input and settings
+# (BusTech's ~28 s filtered queue, no deadband), with the predictions engine's dispatcher adjustments switched on.
+# The host is a clone of oba-nyc-cancel for its Mongo history (production's link times), and that instance's
+# predictions archive is the control. None of its cancel logic is set here. Both repos run their
+# timothy/dispatcher-actions branch.
 export OBA_DEADBAND_ENABLED=false
 export OBA_RMQ_STREAM_NAME=nyct.bustech.gps-filtered
 export OBA_ARCHIVER_S3_PREFIX=v7-dispatcher-actions

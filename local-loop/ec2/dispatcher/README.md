@@ -1,8 +1,22 @@
 # The dispatcher-actions instance (`oba-nyc-dispatcher`, archive prefix `v7-dispatcher-actions`)
 
-A sixth OBA instance: a clone of `oba-nyc-filtered` (v3) with the predictions engine's dispatcher adjustments switched
-on, so that v3 stays the control and the engine is the only difference. It publishes `SKIPPED` stop-time updates and
-`CANCELED` trip updates in its own feed and archive. Why, the settings and the results:
+A sixth OBA instance: `oba-nyc-filtered`'s configuration (BusTech's ~28 s filtered feed, no deadband) with the
+predictions engine's dispatcher adjustments switched on, built on a clone of `oba-nyc-cancel` for its Mongo history.
+It publishes `SKIPPED` stop-time updates and `CANCELED` trip updates in its own feed and archive.
+
+**Why clone `oba-nyc-cancel` and not `oba-nyc-filtered`.** Its predictions database holds production's link-time
+history (`AggregateLinkTimes-2026-10-31.ndjson.gz`, loaded 2026-11-02) plus everything it has learned since, where
+`oba-nyc-filtered`'s is shallow on weekends (0.35–0.5 points of accuracy). And it runs the stock predictions engine on
+the same input, so its predictions archive (`v6-cancel`) is the control: production-depth history, engine off.
+`oba-nyc-filtered` (`v3-filtered`) is a second reference.
+
+**Nothing of the cancel instance's own logic is adopted.** That logic (CANCELED for scheduled trips with no matched
+vehicle, and a GTFS-RT archiver) lives in its Inference Repo branch `ds/ec2-cancel-scheduled`, its `env-local.sh`
+(`OBA_GTFSRT_CANCEL_UNMATCHED`) and its `oba-gtfsrt-archiver` unit. The quarantine removes the `env-local.sh` and
+disables the unit, `install.sh` replaces the clone's `deploy.sh` (the cancel branch's installs and starts that
+archiver) with this branch's, and the deploy checks out and rebuilds `timothy/dispatcher-actions`, which contains
+neither of that branch's two commits. Both are confined to the GTFS-RT module and host scripts, so
+`oba-nyc-cancel`'s predictions archive is the stock engine's. Step 7 verifies the result. Why, the settings and the results:
 onebusaway-nyc-predictions `replay/docs/DISPATCHER-ACTIONS-STATUS.md` and `-STAGE5-PLAN.md`.
 
 Nothing here has been run yet. The files:
@@ -10,8 +24,8 @@ Nothing here has been run yet. The files:
 | file | what |
 |---|---|
 | `../env-local/oba-nyc-dispatcher.sh` | the instance's identity: v3's input and settings, the archive prefixes, the engine flags (`OBA_PREDICTIONS_EXTRA_OPTS`) and the log config (`OBA_PREDICTIONS_LOG4J`) |
-| `quarantine-userdata.yaml` | first boot of the clone: stops and disables every `oba-*` unit and removes the inherited `env-local.sh`, once |
-| `install.sh` | on the quarantined clone, as root: installs the identity, the log config, the sync timer and `TimePoints.csv`, disables v3's own units, enables this instance's |
+| `quarantine-userdata.yaml` | first boot of the clone: stops and disables every `oba-*` unit and removes the inherited `env-local.sh`, once (it works for a clone of any OBA instance) |
+| `install.sh` | on the quarantined clone, as root: installs the identity, the log config, the sync timer and `TimePoints.csv`, disables the units that belong to other instances, enables this instance's |
 | `log4j2-predictions-dispatcher.xml` | `log4j2-predictions.xml` plus a daily file of the engine's decision lines, `/data/adjustments/logs/adj-<date>.log` |
 | `adjustments-sync.sh`, `oba-adjustments-sync.service`, `.timer` | hourly: decision logs and the skip-span file to `s3://ds-oba/replay/prediction/dispatcher-actions/live/v7-dispatcher-actions/` |
 
@@ -25,13 +39,14 @@ Nothing here has been run yet. The files:
 
 ```bash
 P=s3://ds-oba/replay/prediction/dispatcher-actions/live/v7-dispatcher-actions
-SRC=i-0d78f39b83d961f5c                      # oba-nyc-filtered
+SRC=i-03be377d82a9bbd72                      # oba-nyc-cancel: the Mongo history; its config and code are replaced
 
 # 1. publish the install files
 aws s3 sync local-loop/ec2/dispatcher/ $P/deploy/ --exclude README.md
 aws s3 cp local-loop/ec2/env-local/oba-nyc-dispatcher.sh $P/deploy/
+aws s3 cp local-loop/ec2/opt-oba/deploy.sh $P/deploy/          # this branch's, to replace the clone's before the first deploy
 
-# 2. image v3 without rebooting it (root + the 500 GB /data volume: bundle, Mongo history, built trees)
+# 2. image oba-nyc-cancel without rebooting it (root + the 500 GB /data volume: bundle, Mongo history, built trees)
 AMI=$(aws ec2 create-image --instance-id $SRC --name oba-nyc-dispatcher-base-$(date +%F) --no-reboot \
   --query ImageId --output text); aws ec2 wait image-available --image-ids $AMI
 
@@ -48,8 +63,9 @@ aws ec2 describe-instances --instance-ids $ID \
   --query 'Reservations[].Instances[].BlockDeviceMappings[].[DeviceName,Ebs.DeleteOnTermination]' --output text
 
 # 4. over SSM on the clone: confirm the quarantine held before anything else
-cat /opt/oba/CLONE-QUARANTINED; systemctl is-active oba-predictions oba-inference oba-shadow-predictions \
-  oba-bustrek-live-archiver oba-yardtrek-live-archiver oba-predictions-archiver   # all inactive
+cat /opt/oba/CLONE-QUARANTINED; systemctl is-active oba-predictions oba-inference oba-gtfsrt \
+  oba-gtfsrt-archiver oba-predictions-archiver                                     # all inactive
+ls /opt/oba/env-local.sh                                                          # gone
 journalctl -b --no-pager -u 'oba-*' | head                                       # nothing from this boot
 
 # 5. install the identity (starts nothing)
@@ -65,6 +81,11 @@ ps -ef | grep -o 'adjustments\.[a-zA-Z.]*=[^ ]*'               # the six flags o
 P2=$(systemctl show oba-predictions-archiver -p MainPID --value); tr '\0' '\n' < /proc/$P2/environ | grep OBA_ARCHIVER_S3_PREFIX
 grep -m1 'dispatcher adjustments enabled' /data/adjustments/logs/adj-current.log
 grep 'adj summary' /data/adjustments/logs/adj-current.log | tail -1   # after the first hour: every counter
+# none of the cancel instance's logic: our branch, no cancel-unmatched setting, its archiver off
+sudo -u oba git -C /opt/oba/onebusaway-nyc rev-parse --abbrev-ref HEAD               # timothy/dispatcher-actions
+sudo -u oba git -C /opt/oba/onebusaway-nyc-predictions rev-parse --abbrev-ref HEAD   # timothy/dispatcher-actions
+G=$(systemctl show oba-gtfsrt -p MainPID --value); tr '\0' '\n' < /proc/$G/environ | grep -c OBA_GTFSRT_CANCEL   # 0
+systemctl is-enabled oba-gtfsrt-archiver                                             # disabled
 ```
 
 Then the feed checks, M1–M6 in the predictions repo's `DISPATCHER-ACTIONS-REVIEW-PACKET.md` §8, and a week of daily
@@ -72,21 +93,23 @@ scoring from the synced logs.
 
 ## What the clone carries, and what to do about it
 
-- **Mongo history:** v3's, as of the image. That is the same depth as the control, which is what the comparison
-  wants. `oba-nyc-cancel` instead loaded production's historicals at launch (`/data/historicals` on that host); how
-  is not written down, and it is not needed for a v3-against-v7 comparison.
-- **The shadow:** its units are disabled by the quarantine and again by `install.sh`. Its 4.7 GB under `/data/shadow`
-  and its Mongo database `onebusaway-nyc-predictions-shadow` come along and can be deleted on the clone.
-- **v3's snapshot archivers** (`oba-bustrek-live-archiver`, `oba-yardtrek-live-archiver`): disabled here; v3 keeps
-  archiving.
-- **v3's inference archive prefix:** replaced by `oba-ec2-inference/v7-dispatcher-actions` in the identity, so a day
-  on this instance can be replayed on its own records.
+- **Mongo history:** `oba-nyc-cancel`'s, as of the image: production's link-time history to 2026-10-31 and its own
+  since. This is what the clone is for. From then on the two instances learn from the same input, so their histories
+  stay close.
+- **The cancel instance's code and units:** replaced or disabled, as above. Its `/data/gtfsrt-archive` and
+  `/data/historicals` (2 GB) come along and can be deleted on the clone.
+- **No inference archiver:** `oba-nyc-cancel` has none, so this instance's own inference is not archived unless the
+  archiver is copied from `oba-nyc-filtered`. That instance's archive is the same input through the same inference
+  code and serves for replays.
+- **Dependence on the control:** `oba-nyc-cancel` has to keep running unchanged for the comparison to hold, and its
+  owner should know it is now a control.
 
 ## Not covered here
 
 - A CloudWatch dashboard and disk alarm for the instance (v3's were copied from prod's with the ids rewritten).
 - Stopping the shadow units on `oba-nyc-filtered` once this instance publishes, or keeping them a week to compare
   the shadow's decisions with the live ones.
+- Copying the inference archiver from `oba-nyc-filtered`.
 
 ## Rollback
 
