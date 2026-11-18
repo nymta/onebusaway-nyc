@@ -19,7 +19,7 @@ neither of that branch's two commits. Both are confined to the GTFS-RT module an
 `oba-nyc-cancel`'s predictions archive is the stock engine's. Step 7 verifies the result. Why, the settings and the results:
 onebusaway-nyc-predictions `replay/docs/DISPATCHER-ACTIONS-STATUS.md` and `-STAGE5-PLAN.md`.
 
-Nothing here has been run yet. The files:
+Run 2026-11-18 01:03 UTC: the instance is `i-0dcf1fc4e88c347ff`, engine on since 01:28 UTC. The files:
 
 | file | what |
 |---|---|
